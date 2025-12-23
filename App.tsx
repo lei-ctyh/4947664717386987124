@@ -382,7 +382,7 @@ const App: React.FC = () => {
     const [editingElement, setEditingElement] = useState<{ id: string; text: string; } | null>(null);
     const [lassoPath, setLassoPath] = useState<Point[] | null>(null);
 
-    const [language, setLanguage] = useState<'en' | 'zho'>('en');
+    const [language, setLanguage] = useState<'en' | 'zho'>('zho');
     const [uiTheme, setUiTheme] = useState({ color: '#171717', opacity: 0.7 });
     const [buttonTheme, setButtonTheme] = useState({ color: '#374151', opacity: 0.8 });
     
@@ -398,6 +398,9 @@ const App: React.FC = () => {
     
     const [generationMode, setGenerationMode] = useState<'image' | 'video'>('image');
     const [videoAspectRatio, setVideoAspectRatio] = useState<'16:9' | '9:16'>('16:9');
+    const [imageAspectRatio, setImageAspectRatio] = useState<string>('auto');
+    const [imageSize, setImageSize] = useState<'1K' | '2K' | '4K'>('1K');
+    const [imageCount, setImageCount] = useState<1 | 2 | 3 | 4>(1);
     const [progressMessage, setProgressMessage] = useState<string>('');
     const [aiProvider, setAiProvider] = useState<AiProviderId>(() => {
         try {
@@ -1454,6 +1457,15 @@ const App: React.FC = () => {
         // IMAGE GENERATION LOGIC
         try {
             const isEditing = selectedElementIds.length > 0;
+            const resolvedImageCount = imageCount;
+
+            const loadImageDimensions = (dataUrl: string): Promise<{ width: number; height: number }> =>
+                new Promise((resolve, reject) => {
+                    const img = new Image();
+                    img.onload = () => resolve({ width: img.width, height: img.height });
+                    img.onerror = () => reject(new Error('Failed to load the generated image.'));
+                    img.src = dataUrl;
+                });
 
             if (isEditing) {
                 const selectedElements = elements.filter(el => selectedElementIds.includes(el.id));
@@ -1464,38 +1476,53 @@ const App: React.FC = () => {
                 if (imageElements.length === 1 && maskPaths.length > 0 && selectedElements.length === (1 + maskPaths.length)) {
                     const baseImage = imageElements[0];
                     const maskData = await rasterizeMask(maskPaths, baseImage);
-                    const result = await ai.editImage({
-                        images: [{ href: baseImage.href, mimeType: baseImage.mimeType }],
-                        prompt,
-                        mask: { href: maskData.href, mimeType: maskData.mimeType },
-                    });
-                    
-                    if (result.newImageBase64 && result.newImageMimeType) {
-                        const { newImageBase64, newImageMimeType } = result;
 
-                        const img = new Image();
-                        img.onload = () => {
-                            const maskPathIds = new Set(maskPaths.map(p => p.id));
-                            commitAction(prev => 
-                                prev.map(el => {
-                                    if (el.id === baseImage.id && el.type === 'image') {
-                                        return {
-                                            ...el,
-                                            href: `data:${newImageMimeType};base64,${newImageBase64}`,
-                                            width: img.width,
-                                            height: img.height,
-                                        };
-                                    }
-                                    return el;
-                                }).filter(el => !maskPathIds.has(el.id))
+                    const maskPathIds = new Set(maskPaths.map(p => p.id));
+                    let cursorX = baseImage.x + baseImage.width + 20;
+                    let hasReplacedBase = false;
+
+                    for (let i = 0; i < resolvedImageCount; i++) {
+                        setProgressMessage(`Generating... (${i + 1}/${resolvedImageCount})`);
+                        const result = await ai.editImage({
+                            images: [{ href: baseImage.href, mimeType: baseImage.mimeType }],
+                            prompt,
+                            mask: { href: maskData.href, mimeType: maskData.mimeType },
+                            aspectRatio: imageAspectRatio,
+                            imageSize,
+                        });
+
+                        if (!result.newImageBase64 || !result.newImageMimeType) {
+                            throw new Error(result.textResponse || 'Inpainting failed to produce an image.');
+                        }
+
+                        const dataUrl = `data:${result.newImageMimeType};base64,${result.newImageBase64}`;
+                        const { width, height } = await loadImageDimensions(dataUrl);
+
+                        if (!hasReplacedBase) {
+                            commitAction(prev =>
+                                prev
+                                    .map(el => {
+                                        if (el.id === baseImage.id && el.type === 'image') {
+                                            return { ...el, href: dataUrl, mimeType: result.newImageMimeType!, width, height };
+                                        }
+                                        return el;
+                                    })
+                                    .filter(el => !maskPathIds.has(el.id))
                             );
                             setSelectedElementIds([baseImage.id]);
-                        };
-                        img.onerror = () => setError('Failed to load the generated image.');
-                        img.src = `data:${newImageMimeType};base64,${newImageBase64}`;
+                            cursorX = baseImage.x + width + 20;
+                            hasReplacedBase = true;
+                            continue;
+                        }
 
-                    } else {
-                        setError(result.textResponse || 'Inpainting failed to produce an image.');
+                        const newImage: ImageElement = {
+                            id: generateId(), type: 'image', x: cursorX, y: baseImage.y, name: `Generated Image ${i + 1}`,
+                            width, height,
+                            href: dataUrl, mimeType: result.newImageMimeType,
+                        };
+                        commitAction(prev => [...prev, newImage]);
+                        setSelectedElementIds([newImage.id]);
+                        cursorX += width + 20;
                     }
                     return; // End execution for inpainting path
                 }
@@ -1507,65 +1534,67 @@ const App: React.FC = () => {
                     return rasterizeElement(el as Exclude<Element, ImageElement | VideoElement>);
                 });
                 const imagesToProcess = await Promise.all(imagePromises);
-                const result = await ai.editImage({ images: imagesToProcess, prompt });
 
-                if (result.newImageBase64 && result.newImageMimeType) {
-                    const { newImageBase64, newImageMimeType } = result;
-                    
-                    const img = new Image();
-                    img.onload = () => {
-                        let minX = Infinity, minY = Infinity, maxX = -Infinity;
-                        selectedElements.forEach(el => {
-                            const bounds = getElementBounds(el);
-                            minX = Math.min(minX, bounds.x);
-                            minY = Math.min(minY, bounds.y);
-                            maxX = Math.max(maxX, bounds.x + bounds.width);
-                        });
-                        const x = maxX + 20;
-                        const y = minY;
-                        
-                        const newImage: ImageElement = {
-                            id: generateId(), type: 'image', x, y, name: 'Generated Image',
-                            width: img.width, height: img.height,
-                            href: `data:${newImageMimeType};base64,${newImageBase64}`, mimeType: newImageMimeType,
-                        };
-                        commitAction(prev => [...prev, newImage]);
-                        setSelectedElementIds([newImage.id]);
+                let minX = Infinity, minY = Infinity, maxX = -Infinity;
+                selectedElements.forEach(el => {
+                    const bounds = getElementBounds(el);
+                    minX = Math.min(minX, bounds.x);
+                    minY = Math.min(minY, bounds.y);
+                    maxX = Math.max(maxX, bounds.x + bounds.width);
+                });
+                let cursorX = maxX + 20;
+
+                for (let i = 0; i < resolvedImageCount; i++) {
+                    setProgressMessage(`Generating... (${i + 1}/${resolvedImageCount})`);
+                    const result = await ai.editImage({ images: imagesToProcess, prompt, aspectRatio: imageAspectRatio, imageSize });
+
+                    if (!result.newImageBase64 || !result.newImageMimeType) {
+                        throw new Error(result.textResponse || 'Generation failed to produce an image.');
+                    }
+
+                    const dataUrl = `data:${result.newImageMimeType};base64,${result.newImageBase64}`;
+                    const { width, height } = await loadImageDimensions(dataUrl);
+
+                    const newImage: ImageElement = {
+                        id: generateId(), type: 'image', x: cursorX, y: minY, name: `Generated Image ${i + 1}`,
+                        width, height,
+                        href: dataUrl, mimeType: result.newImageMimeType,
                     };
-                    img.onerror = () => setError('Failed to load the generated image.');
-                    img.src = `data:${newImageMimeType};base64,${newImageBase64}`;
-                } else {
-                    setError(result.textResponse || 'Generation failed to produce an image.');
+                    commitAction(prev => [...prev, newImage]);
+                    setSelectedElementIds([newImage.id]);
+                    cursorX += width + 20;
                 }
 
             } else {
                 // Generate from scratch
-                const result = await ai.generateImageFromText({ prompt });
+                if (!svgRef.current) return;
+                const svgBounds = svgRef.current.getBoundingClientRect();
+                const screenCenter = { x: svgBounds.left + svgBounds.width / 2, y: svgBounds.top + svgBounds.height / 2 };
+                const canvasPoint = getCanvasPoint(screenCenter.x, screenCenter.y);
 
-                if (result.newImageBase64 && result.newImageMimeType) {
-                    const { newImageBase64, newImageMimeType } = result;
-                    
-                    const img = new Image();
-                    img.onload = () => {
-                        if (!svgRef.current) return;
-                        const svgBounds = svgRef.current.getBoundingClientRect();
-                        const screenCenter = { x: svgBounds.left + svgBounds.width / 2, y: svgBounds.top + svgBounds.height / 2 };
-                        const canvasPoint = getCanvasPoint(screenCenter.x, screenCenter.y);
-                        const x = canvasPoint.x - (img.width / 2);
-                        const y = canvasPoint.y - (img.height / 2);
-                        
-                        const newImage: ImageElement = {
-                            id: generateId(), type: 'image', x, y, name: 'Generated Image',
-                            width: img.width, height: img.height,
-                            href: `data:${newImageMimeType};base64,${newImageBase64}`, mimeType: newImageMimeType,
-                        };
-                        commitAction(prev => [...prev, newImage]);
-                        setSelectedElementIds([newImage.id]);
+                let cursorX: number | null = null;
+
+                for (let i = 0; i < resolvedImageCount; i++) {
+                    setProgressMessage(`Generating... (${i + 1}/${resolvedImageCount})`);
+                    const result = await ai.generateImageFromText({ prompt, aspectRatio: imageAspectRatio, imageSize });
+
+                    if (!result.newImageBase64 || !result.newImageMimeType) {
+                        throw new Error(result.textResponse || 'Generation failed to produce an image.');
+                    }
+
+                    const dataUrl = `data:${result.newImageMimeType};base64,${result.newImageBase64}`;
+                    const { width, height } = await loadImageDimensions(dataUrl);
+                    const x = cursorX == null ? canvasPoint.x - (width / 2) : cursorX;
+                    const y = canvasPoint.y - (height / 2);
+
+                    const newImage: ImageElement = {
+                        id: generateId(), type: 'image', x, y, name: `Generated Image ${i + 1}`,
+                        width, height,
+                        href: dataUrl, mimeType: result.newImageMimeType,
                     };
-                    img.onerror = () => setError('Failed to load the generated image.');
-                    img.src = `data:${newImageMimeType};base64,${newImageBase64}`;
-                } else { 
-                    setError(result.textResponse || 'Generation failed to produce an image.'); 
+                    commitAction(prev => [...prev, newImage]);
+                    setSelectedElementIds([newImage.id]);
+                    cursorX = x + width + 20;
                 }
             }
         } catch (err) {
@@ -2418,6 +2447,12 @@ const App: React.FC = () => {
                 setGenerationMode={setGenerationMode}
                 videoAspectRatio={videoAspectRatio}
                 setVideoAspectRatio={setVideoAspectRatio}
+                imageAspectRatio={imageAspectRatio}
+                setImageAspectRatio={setImageAspectRatio}
+                imageSize={imageSize}
+                setImageSize={setImageSize}
+                imageCount={imageCount}
+                setImageCount={setImageCount}
                 aiProvider={aiProvider}
                 setAiProvider={setAiProvider}
                 aiProviderOptions={AI_PROVIDER_OPTIONS}

@@ -189,15 +189,19 @@ export class NanoBananaAiService implements AiService {
     };
   }
 
-  private async createDrawTask(urls: string[], prompt: string): Promise<string> {
+  private async createDrawTask(
+    urls: string[],
+    prompt: string,
+    overrides?: { aspectRatio?: string; imageSize?: string }
+  ): Promise<string> {
     const response = await fetch(`${this.baseUrl()}/v1/draw/nano-banana`, {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify({
         model: this.options.model ?? DEFAULT_MODEL,
         prompt,
-        aspectRatio: this.options.aspectRatio ?? DEFAULT_ASPECT_RATIO,
-        imageSize: this.options.imageSize ?? DEFAULT_IMAGE_SIZE,
+        aspectRatio: overrides?.aspectRatio ?? this.options.aspectRatio ?? DEFAULT_ASPECT_RATIO,
+        imageSize: overrides?.imageSize ?? this.options.imageSize ?? DEFAULT_IMAGE_SIZE,
         urls,
         webHook: "-1",
         shutProgress: false,
@@ -286,7 +290,10 @@ export class NanoBananaAiService implements AiService {
     const urls: string[] = request.images.map((img) => img.href);
     if (request.mask) urls.push(request.mask.href);
 
-    const taskId = await this.createDrawTask(urls, request.prompt);
+    const taskId = await this.createDrawTask(urls, request.prompt, {
+      aspectRatio: request.aspectRatio,
+      imageSize: request.imageSize,
+    });
     const result = await this.pollDrawResult(taskId);
 
     const firstUrl = result.urls[0];
@@ -303,7 +310,10 @@ export class NanoBananaAiService implements AiService {
   }
 
   async generateImageFromText(request: GenerateImageFromTextRequest): Promise<GenerateImageFromTextResult> {
-    const taskId = await this.createDrawTask([], request.prompt);
+    const taskId = await this.createDrawTask([], request.prompt, {
+      aspectRatio: request.aspectRatio,
+      imageSize: request.imageSize,
+    });
     const result = await this.pollDrawResult(taskId);
 
     const firstUrl = result.urls[0];

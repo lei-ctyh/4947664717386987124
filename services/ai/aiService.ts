@@ -7,6 +7,8 @@ export type EditImageRequest = {
   images: ImageInput[];
   prompt: string;
   mask?: ImageInput;
+  aspectRatio?: string;
+  imageSize?: string;
 };
 
 export type EditImageResult = {
@@ -17,6 +19,8 @@ export type EditImageResult = {
 
 export type GenerateImageFromTextRequest = {
   prompt: string;
+  aspectRatio?: string;
+  imageSize?: string;
 };
 
 export type GenerateImageFromTextResult = {
@@ -44,4 +48,3 @@ export interface AiService {
   ): Promise<GenerateImageFromTextResult>;
   generateVideo(request: GenerateVideoRequest): Promise<GenerateVideoResult>;
 }
-

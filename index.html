@@ -6,6 +6,32 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Infinite Canvas AI Editor</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .bp-scrollbar {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+      scrollbar-gutter: stable;
+    }
+
+    .bp-scrollbar::-webkit-scrollbar {
+      width: 10px;
+    }
+
+    .bp-scrollbar::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .bp-scrollbar::-webkit-scrollbar-thumb {
+      background-color: rgba(255, 255, 255, 0.18);
+      border-radius: 9999px;
+      border: 3px solid transparent;
+      background-clip: padding-box;
+    }
+
+    .bp-scrollbar::-webkit-scrollbar-thumb:hover {
+      background-color: rgba(255, 255, 255, 0.28);
+    }
+  </style>
 <script type="importmap">
 {
   "imports": {

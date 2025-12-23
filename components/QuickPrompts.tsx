@@ -39,8 +39,7 @@ export const QuickPrompts: React.FC<QuickPromptsProps> = ({ t, setPrompt, disabl
                 disabled={disabled}
                 aria-label={t('quickPromptsAriaLabel')}
                 title={t('quickPromptsAriaLabel')}
-                className="flex-shrink-0 w-11 h-11 flex items-center justify-center text-white rounded-full disabled:opacity-50 disabled:cursor-not-allowed hover:brightness-110 transition-all duration-200"
-                style={{ backgroundColor: 'var(--button-bg-color)' }}
+                className="flex-shrink-0 w-12 h-12 flex items-center justify-center text-white rounded-full bg-white/5 border border-white/10 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/10 transition-colors duration-200"
             >
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2.69l.13.04a7.9 7.9 0 0 1 5.92 6.61 8.27 8.27 0 0 1-1.77 6.13A8.52 8.52 0 0 1 12 21.31a8.52 8.52 0 0 1-4.28-5.83 8.27 8.27 0 0 1-1.77-6.13A7.9 7.9 0 0 1 11.87 2.73L12 2.69zM12 22v-1.16"/><path d="M9 19h6"/></svg>
             </button>
