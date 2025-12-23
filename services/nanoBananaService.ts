@@ -7,6 +7,7 @@ import type {
   GenerateVideoRequest,
   GenerateVideoResult,
   ImageInput,
+  GeneratedImage,
 } from "./ai/aiService";
 
 export type NanoBananaServiceOptions = {
@@ -192,7 +193,7 @@ export class NanoBananaAiService implements AiService {
   private async createDrawTask(
     urls: string[],
     prompt: string,
-    overrides?: { aspectRatio?: string; imageSize?: string }
+    overrides?: { aspectRatio?: string; imageSize?: string; imageCount?: number }
   ): Promise<string> {
     const response = await fetch(`${this.baseUrl()}/v1/draw/nano-banana`, {
       method: "POST",
@@ -202,6 +203,9 @@ export class NanoBananaAiService implements AiService {
         prompt,
         aspectRatio: overrides?.aspectRatio ?? this.options.aspectRatio ?? DEFAULT_ASPECT_RATIO,
         imageSize: overrides?.imageSize ?? this.options.imageSize ?? DEFAULT_IMAGE_SIZE,
+        ...(typeof overrides?.imageCount === "number" && overrides.imageCount > 1
+          ? { num: Math.max(1, Math.min(4, Math.floor(overrides.imageCount))) }
+          : {}),
         urls,
         webHook: "-1",
         shutProgress: false,
@@ -293,19 +297,28 @@ export class NanoBananaAiService implements AiService {
     const taskId = await this.createDrawTask(urls, request.prompt, {
       aspectRatio: request.aspectRatio,
       imageSize: request.imageSize,
+      imageCount: request.imageCount,
     });
     const result = await this.pollDrawResult(taskId);
 
-    const firstUrl = result.urls[0];
-    if (!firstUrl) {
+    const desiredCount =
+      typeof request.imageCount === "number" ? Math.max(1, Math.min(4, Math.floor(request.imageCount))) : 1;
+    const urlsToFetch = result.urls.slice(0, desiredCount);
+    if (!urlsToFetch.length) {
       return { newImageBase64: null, newImageMimeType: null, textResponse: result.message ?? "No image returned." };
     }
 
-    const { base64, mimeType } = await this.urlToBase64(firstUrl);
+    const generatedImages: GeneratedImage[] = [];
+    for (const url of urlsToFetch) {
+      const { base64, mimeType } = await this.urlToBase64(url);
+      generatedImages.push({ base64, mimeType: mimeType ?? "image/png" });
+    }
+    const first = generatedImages[0];
     return {
-      newImageBase64: base64,
-      newImageMimeType: mimeType ?? "image/png",
+      newImageBase64: first?.base64 ?? null,
+      newImageMimeType: first?.mimeType ?? null,
       textResponse: null,
+      generatedImages,
     };
   }
 
@@ -313,19 +326,28 @@ export class NanoBananaAiService implements AiService {
     const taskId = await this.createDrawTask([], request.prompt, {
       aspectRatio: request.aspectRatio,
       imageSize: request.imageSize,
+      imageCount: request.imageCount,
     });
     const result = await this.pollDrawResult(taskId);
 
-    const firstUrl = result.urls[0];
-    if (!firstUrl) {
+    const desiredCount =
+      typeof request.imageCount === "number" ? Math.max(1, Math.min(4, Math.floor(request.imageCount))) : 1;
+    const urlsToFetch = result.urls.slice(0, desiredCount);
+    if (!urlsToFetch.length) {
       return { newImageBase64: null, newImageMimeType: null, textResponse: result.message ?? "No image returned." };
     }
 
-    const { base64, mimeType } = await this.urlToBase64(firstUrl);
+    const generatedImages: GeneratedImage[] = [];
+    for (const url of urlsToFetch) {
+      const { base64, mimeType } = await this.urlToBase64(url);
+      generatedImages.push({ base64, mimeType: mimeType ?? "image/png" });
+    }
+    const first = generatedImages[0];
     return {
-      newImageBase64: base64,
-      newImageMimeType: mimeType ?? "image/png",
+      newImageBase64: first?.base64 ?? null,
+      newImageMimeType: first?.mimeType ?? null,
       textResponse: null,
+      generatedImages,
     };
   }
 

@@ -13,6 +13,7 @@ import type {
   GenerateVideoRequest,
   GenerateVideoResult,
   ImageInput,
+  GeneratedImage,
 } from "./ai/aiService";
 
 export type GeminiAiServiceOptions = {
@@ -94,6 +95,7 @@ export class GeminiAiService implements AiService {
       let newImageBase64: string | null = null;
       let newImageMimeType: string | null = null;
       let textResponse: string | null = null;
+      const generatedImages: GeneratedImage[] = [];
 
       if (response.candidates?.length && response.candidates[0].content) {
         const responseParts = response.candidates[0].content.parts;
@@ -101,6 +103,9 @@ export class GeminiAiService implements AiService {
           if (part.inlineData) {
             newImageBase64 = part.inlineData.data;
             newImageMimeType = part.inlineData.mimeType;
+            if (newImageBase64 && newImageMimeType) {
+              generatedImages.push({ base64: newImageBase64, mimeType: newImageMimeType });
+            }
           } else if (part.text) {
             textResponse = part.text;
           }
@@ -117,7 +122,7 @@ export class GeminiAiService implements AiService {
         textResponse = textResponse || "The AI did not generate a new image. Please try a different prompt.";
       }
 
-      return { newImageBase64, newImageMimeType, textResponse };
+      return { newImageBase64, newImageMimeType, textResponse, generatedImages: generatedImages.length ? generatedImages : undefined };
     } catch (error) {
       console.error("Error calling Gemini API:", error);
       if (error instanceof Error) throw new Error(`Gemini API Error: ${error.message}`);
@@ -129,21 +134,28 @@ export class GeminiAiService implements AiService {
     const client = this.getClient();
 
     try {
+      const desiredCount =
+        typeof request.imageCount === "number" ? Math.max(1, Math.min(4, Math.floor(request.imageCount))) : 1;
       const response = await client.models.generateImages({
         model: "imagen-4.0-generate-001",
         prompt: request.prompt,
         config: {
-          numberOfImages: 1,
+          numberOfImages: desiredCount,
           outputMimeType: "image/png",
         },
       });
 
       if (response.generatedImages?.length) {
-        const image = response.generatedImages[0];
+        const generatedImages: GeneratedImage[] = response.generatedImages
+          .slice(0, desiredCount)
+          .map((img) => ({ base64: img.image.imageBytes, mimeType: "image/png" }));
+
+        const first = generatedImages[0];
         return {
-          newImageBase64: image.image.imageBytes,
-          newImageMimeType: "image/png",
+          newImageBase64: first?.base64 ?? null,
+          newImageMimeType: first?.mimeType ?? null,
           textResponse: null,
+          generatedImages,
         };
       }
 

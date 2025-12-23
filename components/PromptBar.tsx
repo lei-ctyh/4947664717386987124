@@ -177,6 +177,24 @@ export const PromptBar: React.FC<PromptBarProps> = ({
                         </select>
                     </div>
 
+                    {generationMode === 'image' && (
+                        <div className="flex-shrink-0 flex items-center bg-white/5 border border-white/10 rounded-xl p-1 text-white">
+                            {([1, 2, 3, 4] as const).map((count) => (
+                                <button
+                                    key={count}
+                                    type="button"
+                                    onClick={() => setImageCount(count)}
+                                    disabled={isLoading}
+                                    aria-label={`Images ${count}`}
+                                    title={`Images ${count}`}
+                                    className={`w-9 h-9 flex items-center justify-center text-sm rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${imageCount === count ? 'bg-white/10' : 'hover:bg-white/5'}`}
+                                >
+                                    {count}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+
                     <div className="hidden sm:block w-px h-7 bg-white/10" />
 
                     <div className="flex-shrink-0 flex items-center bg-white/5 border border-white/10 rounded-xl p-1 text-white">
@@ -198,24 +216,6 @@ export const PromptBar: React.FC<PromptBarProps> = ({
 
                     {generationMode === 'image' && (
                         <>
-                            <div className="flex-shrink-0 flex items-center bg-white/5 border border-white/10 rounded-xl p-1 text-white">
-                                {([1, 2, 3, 4] as const).map((count) => (
-                                    <button
-                                        key={count}
-                                        type="button"
-                                        onClick={() => setImageCount(count)}
-                                        disabled={isLoading}
-                                        aria-label={`Images ${count}`}
-                                        title={`Images ${count}`}
-                                        className={`w-9 h-9 flex items-center justify-center text-sm rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${imageCount === count ? 'bg-white/10' : 'hover:bg-white/5'}`}
-                                    >
-                                        {count}
-                                    </button>
-                                ))}
-                            </div>
-
-                            <div className="hidden sm:block w-px h-7 bg-white/10" />
-
                             <div className="relative flex-shrink-0">
                                 <select
                                     aria-label="Aspect Ratio"
@@ -263,7 +263,7 @@ export const PromptBar: React.FC<PromptBarProps> = ({
                     )}
 
                     {generationMode === 'video' && (
-                        <div className="flex-shrink-0 flex items-center bg-white/5 border border-white/10 rounded-xl p-1">
+                        <div className="flex-shrink-0 flex items-center bg-white/5 border border-white/10 rounded-xl p-1 text-white">
                             <button
                                 onClick={() => setVideoAspectRatio('16:9')}
                                 title={t('promptBar.aspectRatioHorizontal')}

@@ -559,6 +559,66 @@ const App: React.FC = () => {
         return descendants;
     }, []);
 
+    const getSelectionWithDescendants = useCallback((selectionIds: string[], allElements: Element[]) => {
+        const ids = new Set<string>();
+        selectionIds.forEach((id) => {
+            ids.add(id);
+            getDescendants(id, allElements).forEach((desc) => ids.add(desc.id));
+        });
+        return ids;
+    }, [getDescendants]);
+
+    const triggerDownload = (href: string, filename: string) => {
+        const link = document.createElement('a');
+        link.href = href;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
+    const handleDeleteSelectedElements = useCallback(() => {
+        if (selectedElementIds.length === 0) return;
+        commitAction(prev => {
+            const idsToDelete = getSelectionWithDescendants(selectedElementIds, prev);
+            return prev.filter(el => !idsToDelete.has(el.id));
+        });
+        setSelectedElementIds([]);
+        setContextMenu(null);
+    }, [commitAction, getSelectionWithDescendants, selectedElementIds]);
+
+    const handleDownloadSelectedElements = useCallback(async () => {
+        if (selectedElementIds.length === 0) return;
+
+        const allElements = elementsRef.current;
+        const idsToInclude = getSelectionWithDescendants(selectedElementIds, allElements);
+        const selected = allElements.filter(el => idsToInclude.has(el.id));
+
+        // Groups have no direct raster representation here; download their children instead.
+        const downloadable = selected.filter(el => el.type !== 'group');
+        if (downloadable.length === 0) return;
+
+        try {
+            for (const element of downloadable) {
+                if (element.type === 'image') {
+                    const ext = element.mimeType.split('/')[1] || 'png';
+                    triggerDownload(element.href, `canvas-image-${element.id}.${ext}`);
+                } else if (element.type === 'video') {
+                    const ext = element.mimeType.split('/')[1] || 'mp4';
+                    triggerDownload(element.href, `canvas-video-${element.id}.${ext}`);
+                } else {
+                    const { href } = await rasterizeElement(element as Exclude<Element, ImageElement | VideoElement>);
+                    triggerDownload(href, `canvas-element-${element.id}.png`);
+                }
+                await new Promise((resolve) => setTimeout(resolve, 80));
+            }
+        } catch (err) {
+            const error = err as Error;
+            setError(`Download failed: ${error.message}`);
+            console.error(err);
+        }
+    }, [getSelectionWithDescendants, selectedElementIds]);
+
     const handleStopEditing = useCallback(() => {
         if (!editingElement) return;
         commitAction(prev => prev.map(el =>
@@ -583,17 +643,21 @@ const App: React.FC = () => {
 
             if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); handleUndo(); return; }
             if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) { e.preventDefault(); handleRedo(); return; }
+            if (!isTyping && (e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+                e.preventDefault();
+                setSelectedElementIds(elementsRef.current.map(el => el.id));
+                return;
+            }
+            if (!isTyping && e.key === 'Escape' && selectedElementIds.length > 0) {
+                e.preventDefault();
+                setSelectedElementIds([]);
+                setContextMenu(null);
+                return;
+            }
             
             if (!isTyping && (e.key === 'Delete' || e.key === 'Backspace') && selectedElementIds.length > 0) {
                 e.preventDefault();
-                commitAction(prev => {
-                    const idsToDelete = new Set(selectedElementIds);
-                    selectedElementIds.forEach(id => {
-                        getDescendants(id, prev).forEach(desc => idsToDelete.add(desc.id));
-                    });
-                    return prev.filter(el => !idsToDelete.has(el.id));
-                });
-                setSelectedElementIds([]);
+                handleDeleteSelectedElements();
                 return;
             }
 
@@ -641,7 +705,7 @@ const App: React.FC = () => {
             window.removeEventListener('keydown', handleKeyDown);
             window.removeEventListener('keyup', handleKeyUp);
         };
-    }, [handleUndo, handleRedo, selectedElementIds, editingElement, activeTool, commitAction, getDescendants, handleStopEditing]);
+    }, [handleUndo, handleRedo, selectedElementIds, editingElement, activeTool, handleStopEditing, handleDeleteSelectedElements]);
     
     const getCanvasPoint = useCallback((screenX: number, screenY: number): Point => {
         if (!svgRef.current) return { x: 0, y: 0 };
@@ -1467,6 +1531,19 @@ const App: React.FC = () => {
                     img.src = dataUrl;
                 });
 
+            const toGeneratedDataUrls = (result: { generatedImages?: Array<{ base64: string; mimeType: string }>; newImageBase64: string | null; newImageMimeType: string | null; }): Array<{ href: string; mimeType: string }> => {
+                if (result.generatedImages?.length) {
+                    return result.generatedImages.map((img) => ({
+                        href: `data:${img.mimeType};base64,${img.base64}`,
+                        mimeType: img.mimeType,
+                    }));
+                }
+                if (result.newImageBase64 && result.newImageMimeType) {
+                    return [{ href: `data:${result.newImageMimeType};base64,${result.newImageBase64}`, mimeType: result.newImageMimeType }];
+                }
+                return [];
+            };
+
             if (isEditing) {
                 const selectedElements = elements.filter(el => selectedElementIds.includes(el.id));
                 const imageElements = selectedElements.filter(el => el.type === 'image') as ImageElement[];
@@ -1477,53 +1554,52 @@ const App: React.FC = () => {
                     const baseImage = imageElements[0];
                     const maskData = await rasterizeMask(maskPaths, baseImage);
 
+                    setProgressMessage('Generating...');
+                    const result = await ai.editImage({
+                        images: [{ href: baseImage.href, mimeType: baseImage.mimeType }],
+                        prompt,
+                        mask: { href: maskData.href, mimeType: maskData.mimeType },
+                        aspectRatio: imageAspectRatio,
+                        imageSize,
+                        imageCount: resolvedImageCount,
+                    });
+
+                    const generated = toGeneratedDataUrls(result);
+                    if (!generated.length) throw new Error(result.textResponse || 'Inpainting failed to produce an image.');
+
+                    const dims = await Promise.all(generated.map((img) => loadImageDimensions(img.href)));
                     const maskPathIds = new Set(maskPaths.map(p => p.id));
-                    let cursorX = baseImage.x + baseImage.width + 20;
-                    let hasReplacedBase = false;
 
-                    for (let i = 0; i < resolvedImageCount; i++) {
-                        setProgressMessage(`Generating... (${i + 1}/${resolvedImageCount})`);
-                        const result = await ai.editImage({
-                            images: [{ href: baseImage.href, mimeType: baseImage.mimeType }],
-                            prompt,
-                            mask: { href: maskData.href, mimeType: maskData.mimeType },
-                            aspectRatio: imageAspectRatio,
-                            imageSize,
-                        });
+                    const first = generated[0];
+                    const firstDims = dims[0];
+                    const additionalImages: ImageElement[] = [];
+                    let cursorX = baseImage.x + firstDims.width + 20;
 
-                        if (!result.newImageBase64 || !result.newImageMimeType) {
-                            throw new Error(result.textResponse || 'Inpainting failed to produce an image.');
-                        }
-
-                        const dataUrl = `data:${result.newImageMimeType};base64,${result.newImageBase64}`;
-                        const { width, height } = await loadImageDimensions(dataUrl);
-
-                        if (!hasReplacedBase) {
-                            commitAction(prev =>
-                                prev
-                                    .map(el => {
-                                        if (el.id === baseImage.id && el.type === 'image') {
-                                            return { ...el, href: dataUrl, mimeType: result.newImageMimeType!, width, height };
-                                        }
-                                        return el;
-                                    })
-                                    .filter(el => !maskPathIds.has(el.id))
-                            );
-                            setSelectedElementIds([baseImage.id]);
-                            cursorX = baseImage.x + width + 20;
-                            hasReplacedBase = true;
-                            continue;
-                        }
-
-                        const newImage: ImageElement = {
+                    for (let i = 1; i < generated.length; i++) {
+                        const { href, mimeType } = generated[i];
+                        const { width, height } = dims[i];
+                        additionalImages.push({
                             id: generateId(), type: 'image', x: cursorX, y: baseImage.y, name: `Generated Image ${i + 1}`,
                             width, height,
-                            href: dataUrl, mimeType: result.newImageMimeType,
-                        };
-                        commitAction(prev => [...prev, newImage]);
-                        setSelectedElementIds([newImage.id]);
+                            href, mimeType,
+                        });
                         cursorX += width + 20;
                     }
+
+                    commitAction(prev =>
+                        [
+                            ...prev
+                                .map(el => {
+                                    if (el.id === baseImage.id && el.type === 'image') {
+                                        return { ...el, href: first.href, mimeType: first.mimeType, width: firstDims.width, height: firstDims.height };
+                                    }
+                                    return el;
+                                })
+                                .filter(el => !maskPathIds.has(el.id)),
+                            ...additionalImages,
+                        ]
+                    );
+                    setSelectedElementIds([additionalImages.length ? additionalImages[additionalImages.length - 1].id : baseImage.id]);
                     return; // End execution for inpainting path
                 }
                 
@@ -1544,26 +1620,23 @@ const App: React.FC = () => {
                 });
                 let cursorX = maxX + 20;
 
-                for (let i = 0; i < resolvedImageCount; i++) {
-                    setProgressMessage(`Generating... (${i + 1}/${resolvedImageCount})`);
-                    const result = await ai.editImage({ images: imagesToProcess, prompt, aspectRatio: imageAspectRatio, imageSize });
+                setProgressMessage('Generating...');
+                const result = await ai.editImage({ images: imagesToProcess, prompt, aspectRatio: imageAspectRatio, imageSize, imageCount: resolvedImageCount });
+                const generated = toGeneratedDataUrls(result);
+                if (!generated.length) throw new Error(result.textResponse || 'Generation failed to produce an image.');
+                const dims = await Promise.all(generated.map((img) => loadImageDimensions(img.href)));
 
-                    if (!result.newImageBase64 || !result.newImageMimeType) {
-                        throw new Error(result.textResponse || 'Generation failed to produce an image.');
-                    }
-
-                    const dataUrl = `data:${result.newImageMimeType};base64,${result.newImageBase64}`;
-                    const { width, height } = await loadImageDimensions(dataUrl);
-
-                    const newImage: ImageElement = {
-                        id: generateId(), type: 'image', x: cursorX, y: minY, name: `Generated Image ${i + 1}`,
+                const newImages: ImageElement[] = generated.map((img, idx) => {
+                    const { width, height } = dims[idx];
+                    const x = idx === 0 ? cursorX : cursorX + dims.slice(0, idx).reduce((acc, d) => acc + d.width + 20, 0);
+                    return {
+                        id: generateId(), type: 'image', x, y: minY, name: `Generated Image ${idx + 1}`,
                         width, height,
-                        href: dataUrl, mimeType: result.newImageMimeType,
+                        href: img.href, mimeType: img.mimeType,
                     };
-                    commitAction(prev => [...prev, newImage]);
-                    setSelectedElementIds([newImage.id]);
-                    cursorX += width + 20;
-                }
+                });
+                commitAction(prev => [...prev, ...newImages]);
+                setSelectedElementIds([newImages[newImages.length - 1].id]);
 
             } else {
                 // Generate from scratch
@@ -1572,30 +1645,27 @@ const App: React.FC = () => {
                 const screenCenter = { x: svgBounds.left + svgBounds.width / 2, y: svgBounds.top + svgBounds.height / 2 };
                 const canvasPoint = getCanvasPoint(screenCenter.x, screenCenter.y);
 
-                let cursorX: number | null = null;
+                setProgressMessage('Generating...');
+                const result = await ai.generateImageFromText({ prompt, aspectRatio: imageAspectRatio, imageSize, imageCount: resolvedImageCount });
+                const generated = toGeneratedDataUrls(result);
+                if (!generated.length) throw new Error(result.textResponse || 'Generation failed to produce an image.');
+                const dims = await Promise.all(generated.map((img) => loadImageDimensions(img.href)));
 
-                for (let i = 0; i < resolvedImageCount; i++) {
-                    setProgressMessage(`Generating... (${i + 1}/${resolvedImageCount})`);
-                    const result = await ai.generateImageFromText({ prompt, aspectRatio: imageAspectRatio, imageSize });
-
-                    if (!result.newImageBase64 || !result.newImageMimeType) {
-                        throw new Error(result.textResponse || 'Generation failed to produce an image.');
-                    }
-
-                    const dataUrl = `data:${result.newImageMimeType};base64,${result.newImageBase64}`;
-                    const { width, height } = await loadImageDimensions(dataUrl);
-                    const x = cursorX == null ? canvasPoint.x - (width / 2) : cursorX;
+                const startX = canvasPoint.x - (dims[0].width / 2);
+                let cursorX = startX;
+                const newImages: ImageElement[] = generated.map((img, idx) => {
+                    const { width, height } = dims[idx];
+                    const x = idx === 0 ? startX : cursorX;
                     const y = canvasPoint.y - (height / 2);
-
-                    const newImage: ImageElement = {
-                        id: generateId(), type: 'image', x, y, name: `Generated Image ${i + 1}`,
-                        width, height,
-                        href: dataUrl, mimeType: result.newImageMimeType,
-                    };
-                    commitAction(prev => [...prev, newImage]);
-                    setSelectedElementIds([newImage.id]);
                     cursorX = x + width + 20;
-                }
+                    return {
+                        id: generateId(), type: 'image', x, y, name: `Generated Image ${idx + 1}`,
+                        width, height,
+                        href: img.href, mimeType: img.mimeType,
+                    };
+                });
+                commitAction(prev => [...prev, ...newImages]);
+                setSelectedElementIds([newImages[newImages.length - 1].id]);
             }
         } catch (err) {
             const error = err as Error; 
@@ -2206,7 +2276,7 @@ const App: React.FC = () => {
                         {selectedElementIds.length > 0 && !croppingState && !editingElement && (() => {
                             if (selectedElementIds.length > 1) {
                                 const bounds = getSelectionBounds(selectedElementIds);
-                                const toolbarScreenWidth = 280;
+                                const toolbarScreenWidth = 380;
                                 const toolbarScreenHeight = 56;
                                 
                                 const toolbarCanvasWidth = toolbarScreenWidth / zoom;
@@ -2227,6 +2297,9 @@ const App: React.FC = () => {
                                         <button title={t('contextMenu.alignment.alignTop')} onClick={() => handleAlignSelection('top')} className="p-2 rounded hover:bg-gray-100"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="4" x2="21" y2="4"></line><rect x="6" y="8" width="4" height="8" rx="1"></rect><rect x="14" y="8" width="4" height="12" rx="1"></rect></svg></button>
                                         <button title={t('contextMenu.alignment.alignMiddle')} onClick={() => handleAlignSelection('middle')} className="p-2 rounded hover:bg-gray-100"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="12" x2="21" y2="12" strokeDasharray="2 2"></line><rect x="6" y="7" width="4" height="10" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg></button>
                                         <button title={t('contextMenu.alignment.alignBottom')} onClick={() => handleAlignSelection('bottom')} className="p-2 rounded hover:bg-gray-100"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="20" x2="21" y2="20"></line><rect x="6" y="12" width="4" height="8" rx="1"></rect><rect x="14" y="8" width="4" height="12" rx="1"></rect></svg></button>
+                                        <div className="h-6 w-px bg-gray-200"></div>
+                                        <button title={t('contextMenu.downloadSelected')} onClick={handleDownloadSelectedElements} className="p-2 rounded hover:bg-gray-100 flex items-center justify-center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg></button>
+                                        <button title={t('contextMenu.deleteSelected')} onClick={handleDeleteSelectedElements} className="p-2 rounded hover:bg-red-100 hover:text-red-600 flex items-center justify-center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
                                     </div>
                                 </div>;
                                 return (
@@ -2410,6 +2483,28 @@ const App: React.FC = () => {
 
                     return (
                         <div style={{ top: contextMenu.y, left: contextMenu.x }} className="absolute z-30 bg-white rounded-md shadow-lg border border-gray-200 text-sm py-1 text-gray-800" onContextMenu={e => e.stopPropagation()}>
+                           <button
+                               onClick={() => { setSelectedElementIds(elementsRef.current.map(el => el.id)); setContextMenu(null); }}
+                               className="block w-full text-left px-4 py-1.5 hover:bg-gray-100"
+                           >
+                               {t('contextMenu.selectAll')}
+                           </button>
+                           {selectedElementIds.length > 0 && (
+                               <button
+                                   onClick={() => { setSelectedElementIds([]); setContextMenu(null); }}
+                                   className="block w-full text-left px-4 py-1.5 hover:bg-gray-100"
+                               >
+                                   {t('contextMenu.clearSelection')}
+                               </button>
+                           )}
+                           {selectedElementIds.length > 0 && (
+                               <>
+                                   <div className="border-t border-gray-100 my-1"></div>
+                                   <button onClick={handleDownloadSelectedElements} className="block w-full text-left px-4 py-1.5 hover:bg-gray-100">{t('contextMenu.downloadSelected')}</button>
+                                   <button onClick={handleDeleteSelectedElements} className="block w-full text-left px-4 py-1.5 hover:bg-gray-100 text-red-600">{t('contextMenu.deleteSelected')}</button>
+                               </>
+                           )}
+                           <div className="border-t border-gray-100 my-1"></div>
                            {isGroupable && <button onClick={handleGroup} className="block w-full text-left px-4 py-1.5 hover:bg-gray-100">{t('contextMenu.group')}</button>}
                            {isUngroupable && <button onClick={handleUngroup} className="block w-full text-left px-4 py-1.5 hover:bg-gray-100">{t('contextMenu.ungroup')}</button>}
                            {(isGroupable || isUngroupable) && <div className="border-t border-gray-100 my-1"></div>}
