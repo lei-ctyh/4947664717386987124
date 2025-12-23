@@ -12,7 +12,7 @@ import { CanvasSettings } from './components/CanvasSettings';
 import { LayerPanel } from './components/LayerPanel';
 import { BoardPanel } from './components/BoardPanel';
 import type { Tool, Point, Element, ImageElement, PathElement, ShapeElement, TextElement, ArrowElement, UserEffect, LineElement, WheelAction, GroupElement, Board, VideoElement } from './types';
-import { editImage, generateImageFromText, generateVideo } from './services/geminiService';
+import { AI_PROVIDER_OPTIONS, getAiService, isAiProviderId, providerSupportsVideo, type AiProviderId } from './services/ai/registry';
 import { fileToDataUrl } from './utils/fileUtils';
 import { translations } from './translations';
 
@@ -399,6 +399,30 @@ const App: React.FC = () => {
     const [generationMode, setGenerationMode] = useState<'image' | 'video'>('image');
     const [videoAspectRatio, setVideoAspectRatio] = useState<'16:9' | '9:16'>('16:9');
     const [progressMessage, setProgressMessage] = useState<string>('');
+    const [aiProvider, setAiProvider] = useState<AiProviderId>(() => {
+        try {
+            const stored = localStorage.getItem('aiProvider');
+            return isAiProviderId(stored) ? stored : 'gemini';
+        } catch {
+            return 'gemini';
+        }
+    });
+
+    useEffect(() => {
+        try {
+            localStorage.setItem('aiProvider', aiProvider);
+        } catch (error) {
+            console.error("Failed to save aiProvider to localStorage", error);
+        }
+    }, [aiProvider]);
+
+    useEffect(() => {
+        if (generationMode === 'video' && !providerSupportsVideo(aiProvider)) {
+            setGenerationMode('image');
+        }
+    }, [aiProvider, generationMode]);
+
+    const ai = useMemo(() => getAiService(aiProvider), [aiProvider]);
 
     const interactionMode = useRef<string | null>(null);
     const startPoint = useRef<Point>({ x: 0, y: 0 });
@@ -1348,6 +1372,11 @@ const App: React.FC = () => {
 
         if (generationMode === 'video') {
             try {
+                if (!providerSupportsVideo(aiProvider)) {
+                    setError(t('ai.videoNotSupported'));
+                    setIsLoading(false);
+                    return;
+                }
                 const selectedElements = elements.filter(el => selectedElementIds.includes(el.id));
                 const imageElement = selectedElements.find(el => el.type === 'image') as ImageElement | undefined;
                 
@@ -1357,12 +1386,12 @@ const App: React.FC = () => {
                     return;
                 }
                 
-                const { videoBlob, mimeType } = await generateVideo(
-                    prompt, 
-                    videoAspectRatio, 
-                    (message) => setProgressMessage(message), 
-                    imageElement ? { href: imageElement.href, mimeType: imageElement.mimeType } : undefined
-                );
+                const { videoBlob, mimeType } = await ai.generateVideo({
+                    prompt,
+                    aspectRatio: videoAspectRatio,
+                    onProgress: (message) => setProgressMessage(message),
+                    image: imageElement ? { href: imageElement.href, mimeType: imageElement.mimeType } : undefined,
+                });
 
                 setProgressMessage('Processing video...');
                 const videoUrl = URL.createObjectURL(videoBlob);
@@ -1435,11 +1464,11 @@ const App: React.FC = () => {
                 if (imageElements.length === 1 && maskPaths.length > 0 && selectedElements.length === (1 + maskPaths.length)) {
                     const baseImage = imageElements[0];
                     const maskData = await rasterizeMask(maskPaths, baseImage);
-                    const result = await editImage(
-                        [{ href: baseImage.href, mimeType: baseImage.mimeType }],
+                    const result = await ai.editImage({
+                        images: [{ href: baseImage.href, mimeType: baseImage.mimeType }],
                         prompt,
-                        { href: maskData.href, mimeType: maskData.mimeType }
-                    );
+                        mask: { href: maskData.href, mimeType: maskData.mimeType },
+                    });
                     
                     if (result.newImageBase64 && result.newImageMimeType) {
                         const { newImageBase64, newImageMimeType } = result;
@@ -1478,7 +1507,7 @@ const App: React.FC = () => {
                     return rasterizeElement(el as Exclude<Element, ImageElement | VideoElement>);
                 });
                 const imagesToProcess = await Promise.all(imagePromises);
-                const result = await editImage(imagesToProcess, prompt);
+                const result = await ai.editImage({ images: imagesToProcess, prompt });
 
                 if (result.newImageBase64 && result.newImageMimeType) {
                     const { newImageBase64, newImageMimeType } = result;
@@ -1511,7 +1540,7 @@ const App: React.FC = () => {
 
             } else {
                 // Generate from scratch
-                const result = await generateImageFromText(prompt);
+                const result = await ai.generateImageFromText({ prompt });
 
                 if (result.newImageBase64 && result.newImageMimeType) {
                     const { newImageBase64, newImageMimeType } = result;
@@ -2389,6 +2418,9 @@ const App: React.FC = () => {
                 setGenerationMode={setGenerationMode}
                 videoAspectRatio={videoAspectRatio}
                 setVideoAspectRatio={setVideoAspectRatio}
+                aiProvider={aiProvider}
+                setAiProvider={setAiProvider}
+                aiProviderOptions={AI_PROVIDER_OPTIONS}
             />}
         </div>
     );

@@ -1,6 +1,7 @@
 import React from 'react';
 import { QuickPrompts } from './QuickPrompts';
 import type { UserEffect, GenerationMode } from '../types';
+import type { AiProviderId, AiProviderOption } from '../services/ai/registry';
 
 interface PromptBarProps {
     t: (key: string, ...args: any[]) => string;
@@ -17,6 +18,9 @@ interface PromptBarProps {
     setGenerationMode: (mode: GenerationMode) => void;
     videoAspectRatio: '16:9' | '9:16';
     setVideoAspectRatio: (ratio: '16:9' | '9:16') => void;
+    aiProvider: AiProviderId;
+    setAiProvider: (provider: AiProviderId) => void;
+    aiProviderOptions: AiProviderOption[];
 }
 
 export const PromptBar: React.FC<PromptBarProps> = ({
@@ -34,8 +38,14 @@ export const PromptBar: React.FC<PromptBarProps> = ({
     setGenerationMode,
     videoAspectRatio,
     setVideoAspectRatio,
+    aiProvider,
+    setAiProvider,
+    aiProviderOptions,
 }) => {
     const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+
+    const activeProvider = aiProviderOptions.find(p => p.id === aiProvider);
+    const supportsVideo = activeProvider?.supportsVideo ?? true;
 
     React.useEffect(() => {
         if (textareaRef.current) {
@@ -43,6 +53,12 @@ export const PromptBar: React.FC<PromptBarProps> = ({
             textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
         }
     }, [prompt]);
+
+    React.useEffect(() => {
+        if (!supportsVideo && generationMode === 'video') {
+            setGenerationMode('image');
+        }
+    }, [supportsVideo, generationMode, setGenerationMode]);
     
     const getPlaceholderText = () => {
         if (!isSelectionActive) {
@@ -80,9 +96,32 @@ export const PromptBar: React.FC<PromptBarProps> = ({
                 style={containerStyle}
                 className="flex items-center gap-2 p-2 backdrop-blur-xl border border-white/10 rounded-full shadow-2xl"
             >
+                <div className="flex-shrink-0">
+                    <select
+                        aria-label={t('ai.provider')}
+                        title={t('ai.provider')}
+                        value={aiProvider}
+                        onChange={(e) => setAiProvider(e.target.value as AiProviderId)}
+                        className="bg-black/20 text-white text-sm rounded-full px-3 py-2 border border-white/10 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                        disabled={isLoading}
+                    >
+                        {aiProviderOptions.map((p) => (
+                            <option key={p.id} value={p.id} className="bg-neutral-900">
+                                {t(p.labelKey)}
+                            </option>
+                        ))}
+                    </select>
+                </div>
                  <div className="flex-shrink-0 flex items-center bg-black/20 rounded-full p-1">
                     <button onClick={() => setGenerationMode('image')} className={`px-3 py-1.5 text-sm rounded-full transition-colors ${generationMode === 'image' ? 'bg-blue-500' : 'hover:bg-white/10'}`}>{t('promptBar.imageMode')}</button>
-                    <button onClick={() => setGenerationMode('video')} className={`px-3 py-1.5 text-sm rounded-full transition-colors ${generationMode === 'video' ? 'bg-blue-500' : 'hover:bg-white/10'}`}>{t('promptBar.videoMode')}</button>
+                    <button
+                        onClick={() => setGenerationMode('video')}
+                        disabled={!supportsVideo}
+                        title={!supportsVideo ? t('ai.videoNotSupported') : t('promptBar.videoMode')}
+                        className={`px-3 py-1.5 text-sm rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${generationMode === 'video' ? 'bg-blue-500' : 'hover:bg-white/10'}`}
+                    >
+                        {t('promptBar.videoMode')}
+                    </button>
                 </div>
                 
                 {generationMode === 'video' && (

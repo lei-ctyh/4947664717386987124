@@ -64,6 +64,14 @@ const QUICK_PROMPTS_ZHO = [
 
 export const translations = {
   en: {
+    ai: {
+      provider: 'AI Provider',
+      providers: {
+        gemini: 'Gemini',
+        nanoBanana: 'Nano Banana',
+      },
+      videoNotSupported: 'Selected provider does not support video generation.',
+    },
     toolbar: {
       undo: 'Undo',
       redo: 'Redo',
@@ -159,6 +167,14 @@ export const translations = {
     }
   },
   zho: {
+    ai: {
+      provider: 'AI 供应商',
+      providers: {
+        gemini: 'Gemini',
+        nanoBanana: 'Nano Banana',
+      },
+      videoNotSupported: '当前供应商不支持视频生成。',
+    },
     toolbar: {
       undo: '撤销',
       redo: '重做',
