@@ -170,7 +170,7 @@ export const PromptBar: React.FC<PromptBarProps> = ({
                             disabled={isLoading}
                         >
                             {aiProviderOptions.map((p) => (
-                                <option key={p.id} value={p.id} className="bg-neutral-900">
+                                <option key={p.id} value={p.id} className="bg-neutral-900" disabled={p.id === 'gemini'}>
                                     {t(p.labelKey)}
                                 </option>
                             ))}

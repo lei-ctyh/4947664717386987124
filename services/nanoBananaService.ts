@@ -21,7 +21,7 @@ export type NanoBananaServiceOptions = {
 };
 
 const DEFAULT_BASE_URL = "https://grsai.dakka.com.cn";
-const DEFAULT_MODEL = "nano-banana-fast";
+const DEFAULT_MODEL = "nano-banana-pro";
 const DEFAULT_ASPECT_RATIO = "auto";
 const DEFAULT_IMAGE_SIZE = "4K";
 const DEFAULT_POLL_INTERVAL_MS = 2000;

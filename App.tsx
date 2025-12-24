@@ -12,7 +12,7 @@ import { CanvasSettings } from './components/CanvasSettings';
 import { LayerPanel } from './components/LayerPanel';
 import { BoardPanel } from './components/BoardPanel';
 import type { Tool, Point, Element, ImageElement, PathElement, ShapeElement, TextElement, ArrowElement, UserEffect, LineElement, WheelAction, GroupElement, Board, VideoElement } from './types';
-import { AI_PROVIDER_OPTIONS, getAiService, isAiProviderId, providerSupportsVideo, type AiProviderId } from './services/ai/registry';
+import { AI_PROVIDER_OPTIONS, getAiService, providerSupportsVideo, type AiProviderId } from './services/ai/registry';
 import { fileToDataUrl } from './utils/fileUtils';
 import { translations } from './translations';
 
@@ -404,10 +404,10 @@ const App: React.FC = () => {
     const [progressMessage, setProgressMessage] = useState<string>('');
     const [aiProvider, setAiProvider] = useState<AiProviderId>(() => {
         try {
-            const stored = localStorage.getItem('aiProvider');
-            return isAiProviderId(stored) ? stored : 'gemini';
+            // Gemini is temporarily disabled in UI; force NanoBanana as the only selectable provider.
+            return 'nanoBanana';
         } catch {
-            return 'gemini';
+            return 'nanoBanana';
         }
     });
 
