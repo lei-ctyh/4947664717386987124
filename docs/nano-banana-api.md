@@ -1,5 +1,7 @@
 # Nano Banana API（BananaPod 使用说明）
 
+> 说明：该文档为历史保留。当前主程序已收敛为仅支持 Gemini 格式服务；NanoBanana 不再作为默认/可选 Provider。
+
 BananaPod 当前以 Nano Banana 接口参数为标准（`prompt / urls / aspectRatio / imageSize` 等），并通过轮询 `/v1/draw/result` 获取生成结果。
 
 ## Base URL

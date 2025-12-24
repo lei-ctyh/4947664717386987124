@@ -404,10 +404,9 @@ const App: React.FC = () => {
     const [progressMessage, setProgressMessage] = useState<string>('');
     const [aiProvider, setAiProvider] = useState<AiProviderId>(() => {
         try {
-            // Gemini is temporarily disabled in UI; force NanoBanana as the only selectable provider.
-            return 'nanoBanana';
+            return 'gemini';
         } catch {
-            return 'nanoBanana';
+            return 'gemini';
         }
     });
 
@@ -1685,10 +1684,10 @@ const App: React.FC = () => {
     const handleDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); }, []);
     const handleDrop = useCallback((e: React.DragEvent) => { e.preventDefault(); if (e.dataTransfer.files && e.dataTransfer.files[0]) { handleAddImageElement(e.dataTransfer.files[0]); } }, [handleAddImageElement]);
 
-    const handlePropertyChange = (elementId: string, updates: Partial<Element>) => {
+    const handlePropertyChange = (elementId: string, updates: Partial<Element> & { type?: never }) => {
         commitAction(prev => prev.map(el => {
             if (el.id === elementId) {
-                 return { ...el, ...updates };
+                 return { ...el, ...updates } as Element;
             }
             return el;
         }));

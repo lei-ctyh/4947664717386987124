@@ -11,51 +11,25 @@
 
 ## 代码入口与分层
 
-- UI 编排入口：`App.tsx` 的 `handleGenerate`（决定走图片/视频、编辑/生成、选择哪个 Provider）。
+- UI 编排入口：`App.tsx` 的 `handleGenerate`（决定走图片编辑/文生图、以及参数）。
 - Provider 抽象：`services/ai/aiService.ts` 定义 `AiService`。
 - Provider 选择与缓存：`services/ai/registry.ts` 的 `getAiService()`（按 `AiProviderId` 延迟创建并复用实例）。
 - 具体实现：
-  - Gemini：`services/geminiService.ts`（图片多模态、文生图、视频长任务）
-  - NanoBanana：`services/nanoBananaService.ts`（创建任务 → 轮询结果 → 下载资源）
+  - Gemini：`services/geminiService.ts`（图片编辑 + 文生图并发次数 + 多供应商容灾）
 
 ## 典型“多个 API 调用”模式
 
-### 1）串行依赖：创建任务 → 轮询 → 下载（NanoBanana）
+### 1）并行独立：文生图次数并发 + 单次请求容灾（Gemini）
 
-NanoBanana 的链路是经典的“异步任务”模型，必须按顺序调用多个接口：
+当用户选择“文生图 4 张”时，会并发发起多个 `generateContent` 请求：
 
-1. **创建任务**：`NanoBananaAiService.createDrawTask(urls, prompt)`
-2. **轮询任务状态/结果**：`NanoBananaAiService.pollDrawResult(id, onProgress?)`
-3. **下载生成资源**：`NanoBananaAiService.urlToBase64(url)`（如果是 `data:` URL 则直接解析，否则 `fetch` 下载）
+- 并发：一次性同时发起 N 个请求（`Promise.allSettled`），减少总耗时
+- 容灾：每个请求内部按 `VITE_GEMINI_BASE_URLS` 列表顺序自动切换供应商，直到成功
+- 兜底：如果有失败，会继续补发请求，直到凑满目标张数或达到上限（见 `VITE_GEMINI_FILL_MAX_TOTAL_ATTEMPTS`）
 
-在 `editImage()` / `generateImageFromText()` 中体现为：
+对应实现：`GeminiAiService.generateImageFromText()`（`services/geminiService.ts`）。
 
-- `taskId = await createDrawTask(...)`
-- `result = await pollDrawResult(taskId)`
-- `await urlToBase64(result.urls[0])`
-
-实现要点：
-
-- **轮询间隔与超时**：通过 `pollIntervalMs` / `timeoutMs`（默认 2s / 180s）控制频率与最长等待。
-- **“完成”判断要兼容字段差异**：`pickUrls()` / `pickStatus()` 兼容多种返回结构；`isDoneStatus()` 同时支持 “状态” 或 “urls 已返回” 两种完成信号。
-- **错误尽早失败**：HTTP 非 2xx 或业务 `code !== 0` 立即抛错；状态为失败且无结果也抛错。
-
-### 2）长任务轮询：启动生成 → 查询 operation → 下载（Gemini 视频）
-
-Gemini 视频生成也是多步链路（服务端异步完成）：
-
-1. 启动生成：`client.models.generateVideos(...)` 返回 `operation`
-2. 轮询 operation：`client.operations.getVideosOperation({ operation })` 直到 `operation.done`
-3. 取下载链接并下载视频：对 `operation.response...uri` 追加 key，再 `fetch` 下载 Blob
-
-对应实现：`GeminiAiService.generateVideo()`（`services/geminiService.ts`）。
-
-实现要点：
-
-- **用 `onProgress` 给 UI “活着的反馈”**：每次轮询间隔（当前为 10s）更新提示语，避免用户误以为卡死。
-- **最后一步下载也要处理失败**：下载响应 `!ok` 直接抛错，避免生成成功但下载失败无提示。
-
-### 3）并行独立：批量准备数据 / 多请求并发
+### 2）并行独立：批量准备数据 / 多请求并发
 
 当多个请求彼此独立时，可以并行减少总耗时：
 
@@ -73,20 +47,18 @@ Gemini 视频生成也是多步链路（服务端异步完成）：
 
 - `editImage({ images, prompt, mask? })`
 - `generateImageFromText({ prompt })`
-- `generateVideo({ prompt, aspectRatio, image?, onProgress })`
 
 Provider 内部可以是：
 
 - 单次请求：例如 Gemini 图片编辑（一次 `generateContent`）
-- 多步请求链：例如 NanoBanana（create → poll → download）
-- 轮询操作：例如 Gemini 视频（generateVideos → getVideosOperation → download）
+- 并发+补发：例如 Gemini 文生图（并发请求、失败自动切供应商、直到凑满张数）
 
 这种设计的价值是：**UI 不需要知道“到底调用了几个接口”**，只处理开始/结束/进度/错误。
 
 ## 错误处理与用户提示（建议做法）
 
 - 服务层（`services/`）：
-  - 抛错信息包含 provider 与上下文（当前 Gemini 已有 `Gemini API Error: ...` 形式；NanoBanana 也包含接口阶段）
+  - 抛错信息包含 provider 与上下文（当前 Gemini 已有 `Gemini API Error: ...` 形式）
   - 明确区分：网络失败、HTTP 失败、业务 code 失败、轮询超时、结果缺失
 - UI 层（`App.tsx`）：
   - 针对配额/限流（如 429 或 `RESOURCE_EXHAUSTED`）转换为更友好的提示
