@@ -1,7 +1,48 @@
 
 
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type { WheelAction } from '../types';
+import { getJson, postJson, putJson } from '../services/ai/backendApi';
+
+type AdminPlatform = {
+    id: string;
+    baseUrl: string;
+    model: string;
+    apiKeyMasked?: string;
+    hasApiKey?: boolean;
+};
+
+type PlatformRow = AdminPlatform & { apiKeyInput: string };
+
+type MonitorStatus = {
+    id: string;
+    baseUrl: string;
+    model: string;
+    checkedAt: string;
+    ok: boolean;
+    latencyMs: number;
+    errorMessage: string | null;
+};
+
+type BusyAction = null | 'load' | 'login' | 'logout' | 'save' | 'refresh' | 'check';
+
+const Spinner: React.FC<{ className?: string }> = ({ className = '' }) => (
+    <svg
+        className={`animate-spin ${className}`}
+        xmlns="http://www.w3.org/2000/svg"
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+    >
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+        <path
+            className="opacity-75"
+            fill="currentColor"
+            d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4z"
+        />
+    </svg>
+);
 
 interface CanvasSettingsProps {
     isOpen: boolean;
@@ -36,13 +77,131 @@ export const CanvasSettings: React.FC<CanvasSettingsProps> = ({
 }) => {
     if (!isOpen) return null;
 
+    const [authPassword, setAuthPassword] = useState('');
+    const [loggedIn, setLoggedIn] = useState(false);
+    const [aiError, setAiError] = useState<string | null>(null);
+    const [busyAction, setBusyAction] = useState<BusyAction>(null);
+    const [platformRows, setPlatformRows] = useState<PlatformRow[]>([]);
+    const [monitorStatus, setMonitorStatus] = useState<MonitorStatus[]>([]);
+
+    const busy = busyAction !== null;
+    const canEditPlatforms = loggedIn && !busy;
+
+    const loadAll = async () => {
+        setAiError(null);
+        const me = await getJson<{ ok: true; loggedIn: boolean }>('/api/auth/me');
+        setLoggedIn(Boolean(me.loggedIn));
+        if (!me.loggedIn) return;
+
+        const platformsRes = await getJson<{ ok: true; platforms: AdminPlatform[] }>('/api/admin/gemini/platforms');
+        setPlatformRows((platformsRes.platforms || []).map((p) => ({ ...p, apiKeyInput: '' })));
+
+        const statusRes = await getJson<{ ok: true; status: MonitorStatus[] }>('/api/monitor/gemini');
+        setMonitorStatus(statusRes.status || []);
+    };
+
+    useEffect(() => {
+        // 打开面板时自动刷新一次（避免每次渲染都触发网络请求）
+        setBusyAction('load');
+        loadAll().catch((e) => setAiError(e instanceof Error ? e.message : String(e))).finally(() => setBusyAction(null));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isOpen]);
+
+    const login = async () => {
+        setBusyAction('login');
+        setAiError(null);
+        try {
+            await postJson('/api/auth/login', { password: authPassword });
+            setAuthPassword('');
+            await loadAll();
+        } catch (e) {
+            setAiError(e instanceof Error ? e.message : String(e));
+        } finally {
+            setBusyAction(null);
+        }
+    };
+
+    const logout = async () => {
+        setBusyAction('logout');
+        setAiError(null);
+        try {
+            await postJson('/api/auth/logout', {});
+            setLoggedIn(false);
+            setPlatformRows([]);
+            setMonitorStatus([]);
+        } catch (e) {
+            setAiError(e instanceof Error ? e.message : String(e));
+        } finally {
+            setBusyAction(null);
+        }
+    };
+
+    const addPlatformRow = () => {
+        const id = `gemini#local:${Date.now()}`;
+        setPlatformRows((prev) => [
+            ...prev,
+            { id, baseUrl: '', model: '', apiKeyMasked: '', hasApiKey: false, apiKeyInput: '' },
+        ]);
+    };
+
+    const savePlatforms = async () => {
+        setBusyAction('save');
+        setAiError(null);
+        try {
+            const missingKey = platformRows.some((p) => !p.hasApiKey && !p.apiKeyInput.trim());
+            if (missingKey) throw new Error(t('settings.ai.missingNewKey'));
+
+            await putJson('/api/admin/gemini/platforms', {
+                platforms: platformRows.map((p) => ({
+                    id: p.id,
+                    baseUrl: p.baseUrl,
+                    model: p.model,
+                    ...(p.apiKeyInput.trim() ? { apiKey: p.apiKeyInput.trim() } : {}),
+                })),
+            });
+            await loadAll();
+        } catch (e) {
+            setAiError(e instanceof Error ? e.message : String(e));
+        } finally {
+            setBusyAction(null);
+        }
+    };
+
+    const refreshMonitor = async () => {
+        setBusyAction('refresh');
+        setAiError(null);
+        try {
+            const statusRes = await getJson<{ ok: true; status: MonitorStatus[] }>('/api/monitor/gemini');
+            setMonitorStatus(statusRes.status || []);
+        } catch (e) {
+            setAiError(e instanceof Error ? e.message : String(e));
+        } finally {
+            setBusyAction(null);
+        }
+    };
+
+    const checkNow = async () => {
+        setBusyAction('check');
+        setAiError(null);
+        try {
+            const statusRes = await postJson<{ ok: true; status: MonitorStatus[] }>('/api/monitor/gemini/check', {});
+            setMonitorStatus(statusRes.status || []);
+        } catch (e) {
+            setAiError(e instanceof Error ? e.message : String(e));
+        } finally {
+            setBusyAction(null);
+        }
+    };
+
+    const monitorById = useMemo(() => new Map(monitorStatus.map((s) => [s.id, s])), [monitorStatus]);
+
     return (
         <div 
             className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 backdrop-blur-sm"
             onClick={onClose}
         >
             <div 
-                className="relative p-6 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl flex flex-col space-y-4 w-80 text-white"
+                className="relative p-6 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl flex flex-col space-y-4 w-[520px] max-w-[92vw] text-white"
                 style={{ backgroundColor: 'var(--ui-bg-color)' }}
                 onClick={(e) => e.stopPropagation()}
             >
@@ -130,12 +289,155 @@ export const CanvasSettings: React.FC<CanvasSettingsProps> = ({
                             onChange={(e) => setButtonTheme({ ...buttonTheme, opacity: parseFloat(e.target.value) })}
                             className="w-32"
                         />
-                         <span className="text-xs text-gray-400 w-8 text-right">{Math.round(buttonTheme.opacity * 100)}%</span>
+                 <span className="text-xs text-gray-400 w-8 text-right">{Math.round(buttonTheme.opacity * 100)}%</span>
                     </div>
                 </div>
 
                 <div className="border-t border-white/10 -mx-6"></div>
-                
+
+                {/* AI Settings (server-side secrets) */}
+                <div className="space-y-3">
+                    <h4 className="text-sm font-medium text-gray-300">{t('settings.ai.title')}</h4>
+
+                    <div className="flex items-center justify-between gap-3">
+                        <div className="text-xs text-gray-300">
+                            {loggedIn ? t('settings.ai.loggedIn') : t('settings.ai.notLoggedIn')}
+                        </div>
+                        <div className="flex items-center gap-2">
+                            {!loggedIn ? (
+                                <>
+                                    <input
+                                        type="password"
+                                        value={authPassword}
+                                        onChange={(e) => setAuthPassword(e.target.value)}
+                                        placeholder={t('settings.ai.passwordPlaceholder')}
+                                        className="px-2 py-1 rounded bg-black/20 border border-white/10 text-sm w-44"
+                                        disabled={busy}
+                                    />
+                                    <button
+                                        onClick={login}
+                                        disabled={busy || !authPassword.trim()}
+                                        className="px-3 py-1.5 text-sm rounded bg-blue-500 disabled:bg-blue-500/40 inline-flex items-center gap-2"
+                                    >
+                                        {busyAction === 'login' && <Spinner className="text-white/90" />}
+                                        {t('settings.ai.login')}
+                                    </button>
+                                </>
+                            ) : (
+                                <button
+                                    onClick={logout}
+                                    disabled={busy}
+                                    className="px-3 py-1.5 text-sm rounded bg-white/20 inline-flex items-center gap-2"
+                                >
+                                    {busyAction === 'logout' && <Spinner className="text-white/80" />}
+                                    {t('settings.ai.logout')}
+                                </button>
+                            )}
+                        </div>
+                    </div>
+
+                    {aiError && (
+                        <div className="text-xs text-red-300 bg-red-500/10 border border-red-400/20 rounded p-2">
+                            {aiError}
+                        </div>
+                    )}
+
+                    {loggedIn && (
+                        <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                                <div className="text-xs text-gray-300">{t('settings.ai.platforms')}</div>
+                                <div className="flex items-center gap-2">
+                                    <button onClick={addPlatformRow} disabled={!canEditPlatforms} className="px-2 py-1 text-xs rounded bg-white/15">
+                                        {t('settings.ai.add')}
+                                    </button>
+                                    <button
+                                        onClick={savePlatforms}
+                                        disabled={!canEditPlatforms}
+                                        className="px-2 py-1 text-xs rounded bg-blue-500/90 inline-flex items-center gap-2"
+                                    >
+                                        {busyAction === 'save' && <Spinner className="text-white/90" />}
+                                        {t('settings.ai.save')}
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="max-h-40 overflow-auto bp-scrollbar border border-white/10 rounded-lg">
+                                <div className="grid grid-cols-12 gap-2 p-2 text-xs text-gray-300 border-b border-white/10 bg-black/10">
+                                    <div className="col-span-5">{t('settings.ai.baseUrl')}</div>
+                                    <div className="col-span-4">{t('settings.ai.model')}</div>
+                                    <div className="col-span-3">{t('settings.ai.apiKey')}</div>
+                                </div>
+                                {platformRows.length === 0 ? (
+                                    <div className="p-3 text-xs text-gray-400">{t('settings.ai.empty')}</div>
+                                ) : (
+                                    platformRows.map((row, idx) => {
+                                        const status = monitorById.get(row.id);
+                                        return (
+                                            <div key={row.id} className="grid grid-cols-12 gap-2 p-2 border-b border-white/5">
+                                                <input
+                                                    className="col-span-5 px-2 py-1 rounded bg-black/20 border border-white/10 text-xs"
+                                                    value={row.baseUrl}
+                                                    disabled={!canEditPlatforms}
+                                                    onChange={(e) =>
+                                                        setPlatformRows((prev) => prev.map((p, i) => (i === idx ? { ...p, baseUrl: e.target.value } : p)))
+                                                    }
+                                                    placeholder="https://..."
+                                                />
+                                                <input
+                                                    className="col-span-4 px-2 py-1 rounded bg-black/20 border border-white/10 text-xs"
+                                                    value={row.model}
+                                                    disabled={!canEditPlatforms}
+                                                    onChange={(e) =>
+                                                        setPlatformRows((prev) => prev.map((p, i) => (i === idx ? { ...p, model: e.target.value } : p)))
+                                                    }
+                                                    placeholder="gemini-..."
+                                                />
+                                                <input
+                                                    className="col-span-3 px-2 py-1 rounded bg-black/20 border border-white/10 text-xs"
+                                                    type="password"
+                                                    value={row.apiKeyInput}
+                                                    disabled={!canEditPlatforms}
+                                                    onChange={(e) =>
+                                                        setPlatformRows((prev) =>
+                                                            prev.map((p, i) => (i === idx ? { ...p, apiKeyInput: e.target.value } : p))
+                                                        )
+                                                    }
+                                                    placeholder={row.apiKeyMasked || ''}
+                                                />
+                                                {status && (
+                                                    <div className="col-span-12 text-[11px] text-gray-400 mt-1">
+                                                        {status.ok ? t('settings.ai.statusOk') : t('settings.ai.statusBad')} · {status.latencyMs}ms · {status.checkedAt}
+                                                        {!status.ok && status.errorMessage ? ` · ${status.errorMessage}` : ''}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })
+                                )}
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={refreshMonitor}
+                                    disabled={!canEditPlatforms}
+                                    className="px-2 py-1 text-xs rounded bg-white/15 inline-flex items-center gap-2"
+                                >
+                                    {busyAction === 'refresh' && <Spinner className="text-white/80" />}
+                                    {t('settings.ai.refreshStatus')}
+                                </button>
+                                <button
+                                    onClick={checkNow}
+                                    disabled={!canEditPlatforms}
+                                    className="px-2 py-1 text-xs rounded bg-white/15 inline-flex items-center gap-2"
+                                >
+                                    {busyAction === 'check' && <Spinner className="text-white/80" />}
+                                    {t('settings.ai.checkNow')}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </div>
+
                 {/* Mouse Wheel Settings */}
                 <div className="space-y-2">
                     <label className="text-sm font-medium text-gray-300">{t('settings.mouseWheel')}</label>
