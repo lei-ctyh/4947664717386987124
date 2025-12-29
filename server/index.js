@@ -81,7 +81,6 @@ const monitor = new GeminiMonitor({
   getPlatforms: getGeminiPlatforms,
   probeTimeoutMs: process.env.BANANAPOD_MONITOR_PROBE_TIMEOUT_MS || 180000,
 });
-monitor.start({ intervalMs: process.env.BANANAPOD_MONITOR_INTERVAL_MS || 60000 });
 
 const server = http.createServer(async (req, res) => {
   try {

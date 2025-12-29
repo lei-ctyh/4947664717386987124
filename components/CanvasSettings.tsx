@@ -95,9 +95,7 @@ export const CanvasSettings: React.FC<CanvasSettingsProps> = ({
 
         const platformsRes = await getJson<{ ok: true; platforms: AdminPlatform[] }>('/api/admin/gemini/platforms');
         setPlatformRows((platformsRes.platforms || []).map((p) => ({ ...p, apiKeyInput: '' })));
-
-        const statusRes = await getJson<{ ok: true; status: MonitorStatus[] }>('/api/monitor/gemini');
-        setMonitorStatus(statusRes.status || []);
+        setMonitorStatus([]);
     };
 
     useEffect(() => {
@@ -160,19 +158,6 @@ export const CanvasSettings: React.FC<CanvasSettingsProps> = ({
                 })),
             });
             await loadAll();
-        } catch (e) {
-            setAiError(e instanceof Error ? e.message : String(e));
-        } finally {
-            setBusyAction(null);
-        }
-    };
-
-    const refreshMonitor = async () => {
-        setBusyAction('refresh');
-        setAiError(null);
-        try {
-            const statusRes = await getJson<{ ok: true; status: MonitorStatus[] }>('/api/monitor/gemini');
-            setMonitorStatus(statusRes.status || []);
         } catch (e) {
             setAiError(e instanceof Error ? e.message : String(e));
         } finally {
@@ -417,14 +402,6 @@ export const CanvasSettings: React.FC<CanvasSettingsProps> = ({
                             </div>
 
                             <div className="flex items-center gap-2">
-                                <button
-                                    onClick={refreshMonitor}
-                                    disabled={!canEditPlatforms}
-                                    className="px-2 py-1 text-xs rounded bg-white/15 inline-flex items-center gap-2"
-                                >
-                                    {busyAction === 'refresh' && <Spinner className="text-white/80" />}
-                                    {t('settings.ai.refreshStatus')}
-                                </button>
                                 <button
                                     onClick={checkNow}
                                     disabled={!canEditPlatforms}

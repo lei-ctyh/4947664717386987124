@@ -20,7 +20,7 @@ export class GeminiMonitor {
     const next = [];
 
     for (const platform of platforms) {
-      const result = await runner.probePlatform(platform, this.probeTimeoutMs);
+      const result = await runner.probePlatformGenerateImage(platform, this.probeTimeoutMs);
       const status = {
         id: platform.id,
         baseUrl: platform.baseUrl,
