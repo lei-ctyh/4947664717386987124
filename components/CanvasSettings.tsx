@@ -197,11 +197,11 @@ export const CanvasSettings: React.FC<CanvasSettingsProps> = ({
 
     return (
         <div 
-            className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+            className="fixed inset-0 z-[45] flex items-center justify-center bg-black/50 backdrop-blur-sm"
             onClick={onClose}
         >
             <div 
-                className="relative p-6 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl flex flex-col space-y-4 w-[520px] max-w-[92vw] text-white"
+                className="relative p-6 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl flex flex-col space-y-4 w-[960px] max-w-[96vw] max-h-[92vh] overflow-y-auto bp-scrollbar text-white"
                 style={{ backgroundColor: 'var(--ui-bg-color)' }}
                 onClick={(e) => e.stopPropagation()}
             >
@@ -362,7 +362,7 @@ export const CanvasSettings: React.FC<CanvasSettingsProps> = ({
                             </div>
 
                             <div className="max-h-40 overflow-auto bp-scrollbar border border-white/10 rounded-lg">
-                                <div className="grid grid-cols-12 gap-2 p-2 text-xs text-gray-300 border-b border-white/10 bg-black/10">
+                                <div className="grid grid-cols-12 gap-2 p-2 text-sm text-gray-300 border-b border-white/10 bg-black/10">
                                     <div className="col-span-5">{t('settings.ai.baseUrl')}</div>
                                     <div className="col-span-4">{t('settings.ai.model')}</div>
                                     <div className="col-span-3">{t('settings.ai.apiKey')}</div>
@@ -374,42 +374,42 @@ export const CanvasSettings: React.FC<CanvasSettingsProps> = ({
                                         const status = monitorById.get(row.id);
                                         return (
                                             <div key={row.id} className="grid grid-cols-12 gap-2 p-2 border-b border-white/5">
-                                                <input
-                                                    className="col-span-5 px-2 py-1 rounded bg-black/20 border border-white/10 text-xs"
-                                                    value={row.baseUrl}
-                                                    disabled={!canEditPlatforms}
-                                                    onChange={(e) =>
-                                                        setPlatformRows((prev) => prev.map((p, i) => (i === idx ? { ...p, baseUrl: e.target.value } : p)))
-                                                    }
-                                                    placeholder="https://..."
-                                                />
-                                                <input
-                                                    className="col-span-4 px-2 py-1 rounded bg-black/20 border border-white/10 text-xs"
-                                                    value={row.model}
-                                                    disabled={!canEditPlatforms}
-                                                    onChange={(e) =>
-                                                        setPlatformRows((prev) => prev.map((p, i) => (i === idx ? { ...p, model: e.target.value } : p)))
-                                                    }
-                                                    placeholder="gemini-..."
-                                                />
-                                                <input
-                                                    className="col-span-3 px-2 py-1 rounded bg-black/20 border border-white/10 text-xs"
-                                                    type="password"
-                                                    value={row.apiKeyInput}
-                                                    disabled={!canEditPlatforms}
-                                                    onChange={(e) =>
-                                                        setPlatformRows((prev) =>
-                                                            prev.map((p, i) => (i === idx ? { ...p, apiKeyInput: e.target.value } : p))
-                                                        )
-                                                    }
-                                                    placeholder={row.apiKeyMasked || ''}
-                                                />
-                                                {status && (
-                                                    <div className="col-span-12 text-[11px] text-gray-400 mt-1">
-                                                        {status.ok ? t('settings.ai.statusOk') : t('settings.ai.statusBad')} · {status.latencyMs}ms · {status.checkedAt}
-                                                        {!status.ok && status.errorMessage ? ` · ${status.errorMessage}` : ''}
-                                                    </div>
-                                                )}
+                                                    <input
+                                                        className="col-span-5 px-2 py-1 rounded bg-black/20 border border-white/10 text-sm"
+                                                        value={row.baseUrl}
+                                                        disabled={!canEditPlatforms}
+                                                        onChange={(e) =>
+                                                            setPlatformRows((prev) => prev.map((p, i) => (i === idx ? { ...p, baseUrl: e.target.value } : p)))
+                                                        }
+                                                        placeholder="https://..."
+                                                    />
+                                                    <input
+                                                        className="col-span-4 px-2 py-1 rounded bg-black/20 border border-white/10 text-sm"
+                                                        value={row.model}
+                                                        disabled={!canEditPlatforms}
+                                                        onChange={(e) =>
+                                                            setPlatformRows((prev) => prev.map((p, i) => (i === idx ? { ...p, model: e.target.value } : p)))
+                                                        }
+                                                        placeholder="gemini-..."
+                                                    />
+                                                    <input
+                                                        className="col-span-3 px-2 py-1 rounded bg-black/20 border border-white/10 text-sm"
+                                                        type="password"
+                                                        value={row.apiKeyInput}
+                                                        disabled={!canEditPlatforms}
+                                                        onChange={(e) =>
+                                                            setPlatformRows((prev) =>
+                                                                prev.map((p, i) => (i === idx ? { ...p, apiKeyInput: e.target.value } : p))
+                                                            )
+                                                        }
+                                                        placeholder={row.apiKeyMasked || ''}
+                                                    />
+                                                    {status && (
+                                                        <div className="col-span-12 text-xs text-gray-400 mt-1">
+                                                            {status.ok ? t('settings.ai.statusOk') : t('settings.ai.statusBad')} · {status.latencyMs}ms · {status.checkedAt}
+                                                            {!status.ok && status.errorMessage ? ` · ${status.errorMessage}` : ''}
+                                                        </div>
+                                                    )}
                                             </div>
                                         );
                                     })
