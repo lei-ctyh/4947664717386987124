@@ -470,10 +470,25 @@ const App: React.FC = () => {
     const [aiTasks, setAiTasks] = useState<AiTask[]>([]);
     const [isTaskQueueCollapsed, setIsTaskQueueCollapsed] = useState<boolean>(true);
     const activeBoardIdRef = useRef(activeBoardId);
+    const [referenceImageOrder, setReferenceImageOrder] = useState<string[]>([]);
 
     useEffect(() => {
         activeBoardIdRef.current = activeBoardId;
     }, [activeBoardId]);
+
+    useEffect(() => {
+        const selectedImageIds = selectedElementIds.filter(id => {
+            const el = elements.find(e => e.id === id);
+            return Boolean(el && el.type === 'image');
+        });
+        setReferenceImageOrder(prev => {
+            const keep = prev.filter(id => selectedImageIds.includes(id));
+            const add = selectedImageIds.filter(id => !keep.includes(id));
+            const next = [...keep, ...add];
+            if (next.length === prev.length && next.every((id, idx) => id === prev[idx])) return prev;
+            return next;
+        });
+    }, [elements, selectedElementIds]);
 
     useEffect(() => {
         try {
@@ -2330,7 +2345,18 @@ const App: React.FC = () => {
 
         const isEditing = selectedElementIds.length > 0;
         if (isEditing) {
-            const selectedElements = elements.filter(el => selectedElementIds.includes(el.id)).map(el => ({ ...el } as Element));
+            const byId = new Map(elements.map(el => [el.id, el] as const));
+            const selectedImageIds = selectedElementIds.filter(id => {
+                const el = byId.get(id);
+                return Boolean(el && el.type === 'image');
+            });
+            const orderedImageIds = referenceImageOrder.filter(id => selectedImageIds.includes(id));
+            const otherIds = selectedElementIds.filter(id => !selectedImageIds.includes(id));
+            const combinedIds = [...orderedImageIds, ...otherIds];
+            const selectedElements = combinedIds
+                .map(id => byId.get(id))
+                .filter((el): el is Element => Boolean(el))
+                .map(el => ({ ...el } as Element));
             if (!selectedElements.length) {
                 setError("未找到选中元素，请重新选择后再试。");
                 return;
@@ -3316,6 +3342,14 @@ const App: React.FC = () => {
                 isLoading={false} 
                 isSelectionActive={isSelectionActive} 
                 selectedElementCount={selectedElementIds.length}
+                referenceImages={referenceImageOrder
+                    .map((id) => {
+                        const el = elements.find(e => e.id === id);
+                        if (!el || el.type !== 'image') return null;
+                        return { id: el.id, href: el.href, mimeType: el.mimeType };
+                    })
+                    .filter((x): x is { id: string; href: string; mimeType: string } => Boolean(x))}
+                onReorderReferenceImages={setReferenceImageOrder}
                 onAddUserEffect={handleAddUserEffect}
                 userEffects={userEffects}
                 onDeleteUserEffect={handleDeleteUserEffect}

@@ -27,6 +27,8 @@ interface PromptBarProps {
     aiProvider: AiProviderId;
     setAiProvider: (provider: AiProviderId) => void;
     aiProviderOptions: AiProviderOption[];
+    referenceImages: Array<{ id: string; href: string; mimeType: string }>;
+    onReorderReferenceImages: (nextIds: string[]) => void;
 }
 
 export const PromptBar: React.FC<PromptBarProps> = ({
@@ -53,8 +55,11 @@ export const PromptBar: React.FC<PromptBarProps> = ({
     aiProvider,
     setAiProvider,
     aiProviderOptions,
+    referenceImages,
+    onReorderReferenceImages,
 }) => {
     const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+    const [draggingId, setDraggingId] = React.useState<string | null>(null);
 
     const activeProvider = aiProviderOptions.find(p => p.id === aiProvider);
     const supportsVideo = activeProvider?.supportsVideo ?? true;
@@ -120,8 +125,58 @@ export const PromptBar: React.FC<PromptBarProps> = ({
         '21:9',
     ];
 
+    const moveId = React.useCallback((ids: string[], fromId: string, toId: string) => {
+        const fromIndex = ids.indexOf(fromId);
+        const toIndex = ids.indexOf(toId);
+        if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return ids;
+        const next = [...ids];
+        const [item] = next.splice(fromIndex, 1);
+        next.splice(toIndex, 0, item);
+        return next;
+    }, []);
+
     return (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-40 w-full max-w-5xl px-4">
+            {referenceImages.length > 1 && (
+                <div className="mb-2 flex justify-center">
+                    <div
+                        className="flex items-center gap-2 px-3 py-2 rounded-2xl bg-white/5 border border-white/10 overflow-x-auto bp-scrollbar max-w-full"
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={() => setDraggingId(null)}
+                        title="参考图顺序将作为输入顺序"
+                    >
+                        {referenceImages.map((img, idx) => (
+                            <div
+                                key={img.id}
+                                draggable={!isLoading}
+                                onDragStart={(e) => {
+                                    setDraggingId(img.id);
+                                    e.dataTransfer.effectAllowed = 'move';
+                                    e.dataTransfer.setData('text/plain', img.id);
+                                }}
+                                onDragEnd={() => setDraggingId(null)}
+                                onDragOver={(e) => {
+                                    e.preventDefault();
+                                    if (!draggingId || draggingId === img.id) return;
+                                    const next = moveId(referenceImages.map(x => x.id), draggingId, img.id);
+                                    onReorderReferenceImages(next);
+                                }}
+                                className={`relative w-12 h-12 rounded-xl overflow-hidden border ${draggingId === img.id ? 'border-white/50 opacity-80' : 'border-white/10'} bg-neutral-900 flex-shrink-0`}
+                            >
+                                <img
+                                    src={img.href}
+                                    className="w-full h-full object-cover"
+                                    draggable={false}
+                                    alt={`ref-${idx + 1}`}
+                                />
+                                <div className="absolute bottom-1 right-1 w-5 h-5 rounded-md bg-black/70 text-white text-xs flex items-center justify-center border border-white/10">
+                                    {idx + 1}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
             <div
                 style={containerStyle}
                 className="backdrop-blur-xl border border-white/10 rounded-[28px] shadow-2xl"
@@ -136,16 +191,18 @@ export const PromptBar: React.FC<PromptBarProps> = ({
                             onDeleteUserEffect={onDeleteUserEffect}
                         />
                     </div>
-                    <textarea
-                        ref={textareaRef}
-                        rows={1}
-                        value={prompt}
-                        onChange={(e) => setPrompt(e.target.value)}
-                        onKeyDown={handleKeyDown}
-                        placeholder={getPlaceholderText()}
-                        className="bp-scrollbar flex-grow bg-transparent text-white placeholder-white/40 focus:outline-none resize-none max-h-40 text-lg sm:text-xl font-medium leading-snug"
-                        disabled={isLoading}
-                    />
+                    <div className="flex-grow min-w-0">
+                        <textarea
+                            ref={textareaRef}
+                            rows={1}
+                            value={prompt}
+                            onChange={(e) => setPrompt(e.target.value)}
+                            onKeyDown={handleKeyDown}
+                            placeholder={getPlaceholderText()}
+                            className="bp-scrollbar w-full bg-transparent text-white placeholder-white/40 focus:outline-none resize-none max-h-40 text-lg sm:text-xl font-medium leading-snug"
+                            disabled={isLoading}
+                        />
+                    </div>
                     <button
                         onClick={handleSaveEffect}
                         disabled={isLoading || !prompt.trim()}
