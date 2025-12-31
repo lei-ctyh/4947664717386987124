@@ -19,6 +19,7 @@ const repoRoot = path.resolve(__dirname, "..");
 const PORT = Number(process.env.PORT || process.env.BANANAPOD_PORT || 8787);
 const REQUIRE_AUTH_FOR_AI = process.env.BANANAPOD_REQUIRE_AUTH_FOR_AI !== "0";
 const STATIC_DIR = process.env.BANANAPOD_STATIC_DIR || path.join(repoRoot, "dist");
+const LOG_API = process.env.BANANAPOD_LOG_API === "1";
 
 const json = (res, statusCode, payload, headers = {}) => {
   const body = JSON.stringify(payload);
@@ -91,6 +92,10 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
     const pathname = url.pathname;
     const method = (req.method || "GET").toUpperCase();
+
+    if (LOG_API && pathname.startsWith("/api/")) {
+      console.log(`[api] ${method} ${pathname}`);
+    }
 
     if (pathname === "/api/health") return json(res, 200, { ok: true });
 

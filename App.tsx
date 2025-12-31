@@ -8,6 +8,7 @@ import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { Toolbar } from './components/Toolbar';
 import { PromptBar } from './components/PromptBar';
 import { Loader } from './components/Loader';
+import { TaskQueuePanel } from './components/TaskQueuePanel';
 import { CanvasSettings } from './components/CanvasSettings';
 import { LayerPanel } from './components/LayerPanel';
 import { BoardPanel } from './components/BoardPanel';
@@ -354,6 +355,47 @@ const createNewBoard = (name: string): Board => {
     };
 };
 
+type AiTaskStatus = "queued" | "running" | "succeeded" | "failed" | "canceled";
+type AiTaskKind = "image.generate" | "image.edit" | "video.generate";
+
+type AiTaskBase = {
+    id: string;
+    kind: AiTaskKind;
+    status: AiTaskStatus;
+    createdAt: number;
+    startedAt?: number;
+    finishedAt?: number;
+    boardId: string;
+    boardName: string;
+    aiProvider: AiProviderId;
+    prompt: string;
+    progress?: string;
+    error?: string;
+};
+
+type AiTask =
+    | (AiTaskBase & {
+          kind: "image.generate";
+          canvasCenter: Point;
+          imageAspectRatio: string;
+          imageSize: "1K" | "2K" | "4K";
+          imageCount: 1 | 2 | 3 | 4;
+      })
+    | (AiTaskBase & {
+          kind: "image.edit";
+          selectedElementIds: string[];
+          selectedElements: Element[];
+          imageAspectRatio: string;
+          imageSize: "1K" | "2K" | "4K";
+          imageCount: 1 | 2 | 3 | 4;
+      })
+    | (AiTaskBase & {
+          kind: "video.generate";
+          canvasCenter: Point;
+          videoAspectRatio: "16:9" | "9:16";
+          image?: { href: string; mimeType: string };
+      });
+
 const App: React.FC = () => {
     const [boards, setBoards] = useState<Board[]>(() => {
         // TODO: Load from localStorage
@@ -409,6 +451,13 @@ const App: React.FC = () => {
             return 'gemini';
         }
     });
+    const [aiTasks, setAiTasks] = useState<AiTask[]>([]);
+    const [isTaskQueueCollapsed, setIsTaskQueueCollapsed] = useState<boolean>(true);
+    const activeBoardIdRef = useRef(activeBoardId);
+
+    useEffect(() => {
+        activeBoardIdRef.current = activeBoardId;
+    }, [activeBoardId]);
 
     useEffect(() => {
         try {
@@ -423,8 +472,6 @@ const App: React.FC = () => {
             setGenerationMode('image');
         }
     }, [aiProvider, generationMode]);
-
-    const ai = useMemo(() => getAiService(aiProvider), [aiProvider]);
 
     const interactionMode = useRef<string | null>(null);
     const startPoint = useRef<Point>({ x: 0, y: 0 });
@@ -527,6 +574,371 @@ const App: React.FC = () => {
             };
         });
     }, [activeBoardId]);
+
+    const commitBoardActionById = useCallback((boardId: string, updater: (prev: Element[]) => Element[]) => {
+        setBoards(prevBoards =>
+            prevBoards.map(board => {
+                if (board.id !== boardId) return board;
+                const newElements = updater(board.elements);
+                const newHistory = [...board.history.slice(0, board.historyIndex + 1), newElements];
+                return { ...board, elements: newElements, history: newHistory, historyIndex: newHistory.length - 1 };
+            })
+        );
+    }, []);
+
+    const TASK_CONCURRENCY = 3;
+    const inFlightTaskIdsRef = useRef<Set<string>>(new Set());
+    const backendHealthRef = useRef<{ checkedAt: number; ok: boolean; error?: string }>({ checkedAt: 0, ok: true });
+    const aiTasksRef = useRef<AiTask[]>([]);
+
+    useEffect(() => {
+        aiTasksRef.current = aiTasks;
+    }, [aiTasks]);
+
+    const updateTaskById = useCallback((taskId: string, patch: Partial<AiTask>) => {
+        setAiTasks(prev => prev.map(t => (t.id === taskId ? ({ ...t, ...patch } as AiTask) : t)));
+    }, []);
+
+    const cancelQueuedTask = useCallback((taskId: string) => {
+        const finishedAt = Date.now();
+        setAiTasks(prev =>
+            prev.map(t => (t.id === taskId && t.status === "queued" ? ({ ...t, status: "canceled", finishedAt } as AiTask) : t))
+        );
+    }, []);
+
+    const removeTaskById = useCallback((taskId: string) => {
+        setAiTasks(prev => prev.filter(t => t.id !== taskId));
+    }, []);
+
+    const clearFinishedTasks = useCallback(() => {
+        setAiTasks(prev => prev.filter(t => t.status === "queued" || t.status === "running"));
+    }, []);
+
+    const loadImageDimensions = (dataUrl: string): Promise<{ width: number; height: number }> =>
+        new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => resolve({ width: img.width, height: img.height });
+            img.onerror = () => reject(new Error('Failed to load the generated image.'));
+            img.src = dataUrl;
+        });
+
+    const toGeneratedDataUrls = (result: {
+        generatedImages?: Array<{ base64: string; mimeType: string }>;
+        newImageBase64: string | null;
+        newImageMimeType: string | null;
+        textResponse?: string | null;
+    }): Array<{ href: string; mimeType: string }> => {
+        if (result.generatedImages?.length) {
+            return result.generatedImages.map((img) => ({
+                href: `data:${img.mimeType};base64,${img.base64}`,
+                mimeType: img.mimeType,
+            }));
+        }
+        if (result.newImageBase64 && result.newImageMimeType) {
+            return [{ href: `data:${result.newImageMimeType};base64,${result.newImageBase64}`, mimeType: result.newImageMimeType }];
+        }
+        return [];
+    };
+
+    const ensureBackendReachable = useCallback(async () => {
+        const now = Date.now();
+        const cached = backendHealthRef.current;
+        if (cached.ok && now - cached.checkedAt < 10_000) return;
+
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5_000);
+        try {
+            const res = await fetch("/api/health", { credentials: "include", signal: controller.signal });
+            if (!res.ok) throw new Error(`后端不可用：${res.status} ${res.statusText}`);
+            backendHealthRef.current = { checkedAt: now, ok: true };
+        } catch (e) {
+            const msg =
+                e instanceof Error
+                    ? e.message
+                    : String(e);
+            backendHealthRef.current = { checkedAt: now, ok: false, error: msg };
+            throw new Error(`后端未启动或不可达（/api/health）：${msg}`);
+        } finally {
+            clearTimeout(timer);
+        }
+    }, []);
+
+    const startTask = useCallback(
+        (task: AiTask) => {
+            if (inFlightTaskIdsRef.current.has(task.id)) return;
+            inFlightTaskIdsRef.current.add(task.id);
+
+            if (task.status !== "queued" && task.status !== "running") {
+                inFlightTaskIdsRef.current.delete(task.id);
+                return;
+            }
+
+            const startedAt = Date.now();
+            setAiTasks(prev =>
+                prev.map(t => {
+                    if (t.id !== task.id) return t;
+                    if (t.status === "queued") {
+                        return { ...t, status: "running", startedAt, progress: "开始执行..." } as AiTask;
+                    }
+                    if (t.status === "running") {
+                        return { ...t, progress: t.progress || "开始执行..." } as AiTask;
+                    }
+                    return t;
+                })
+            );
+
+            (async () => {
+                try {
+                    const current = aiTasksRef.current.find(t => t.id === task.id);
+                    if (!current || current.status !== "running") return;
+
+                    updateTaskById(task.id, { progress: "检查后端..." });
+                    await ensureBackendReachable();
+
+                    const ai = getAiService(task.aiProvider);
+
+                    if (task.kind === "video.generate") {
+                        updateTaskById(task.id, { progress: "生成中..." });
+                        const { videoBlob, mimeType } = await ai.generateVideo({
+                            prompt: task.prompt,
+                            aspectRatio: task.videoAspectRatio,
+                            onProgress: (message) => updateTaskById(task.id, { progress: message }),
+                            image: task.image,
+                        });
+
+                        updateTaskById(task.id, { progress: "处理视频..." });
+                        const videoUrl = URL.createObjectURL(videoBlob);
+                        const meta = await new Promise<{ width: number; height: number }>((resolve, reject) => {
+                            const video = document.createElement("video");
+                            video.onloadedmetadata = () => resolve({ width: video.videoWidth, height: video.videoHeight });
+                            video.onerror = () => reject(new Error("无法读取视频信息。"));
+                            video.src = videoUrl;
+                        });
+
+                        let newWidth = meta.width;
+                        let newHeight = meta.height;
+                        const MAX_DIM = 800;
+                        if (newWidth > MAX_DIM || newHeight > MAX_DIM) {
+                            const ratio = newWidth / newHeight;
+                            if (ratio > 1) {
+                                newWidth = MAX_DIM;
+                                newHeight = MAX_DIM / ratio;
+                            } else {
+                                newHeight = MAX_DIM;
+                                newWidth = MAX_DIM * ratio;
+                            }
+                        }
+
+                        const x = task.canvasCenter.x - newWidth / 2;
+                        const y = task.canvasCenter.y - newHeight / 2;
+
+                        const newVideoElement: VideoElement = {
+                            id: generateId(),
+                            type: "video",
+                            name: "Generated Video",
+                            x,
+                            y,
+                            width: newWidth,
+                            height: newHeight,
+                            href: videoUrl,
+                            mimeType,
+                        };
+
+                        commitBoardActionById(task.boardId, prev => [...prev, newVideoElement]);
+                        if (activeBoardIdRef.current === task.boardId) setSelectedElementIds([newVideoElement.id]);
+                    }
+
+                    if (task.kind === "image.generate") {
+                        updateTaskById(task.id, { progress: "生成中..." });
+                        const result = await ai.generateImageFromText({
+                            prompt: task.prompt,
+                            aspectRatio: task.imageAspectRatio,
+                            imageSize: task.imageSize,
+                            imageCount: task.imageCount,
+                        });
+
+                        const generated = toGeneratedDataUrls(result);
+                        if (!generated.length) throw new Error(result.textResponse || "生成失败：没有返回图片。");
+
+                        updateTaskById(task.id, { progress: "处理图片..." });
+                        const dims = await Promise.all(generated.map((img) => loadImageDimensions(img.href)));
+
+                        const startX = task.canvasCenter.x - dims[0].width / 2;
+                        let cursorX = startX;
+                        const newImages: ImageElement[] = generated.map((img, idx) => {
+                            const { width, height } = dims[idx];
+                            const x = idx === 0 ? startX : cursorX;
+                            const y = task.canvasCenter.y - height / 2;
+                            cursorX = x + width + 20;
+                            return {
+                                id: generateId(),
+                                type: "image",
+                                x,
+                                y,
+                                name: `Generated Image ${idx + 1}`,
+                                width,
+                                height,
+                                href: img.href,
+                                mimeType: img.mimeType,
+                            };
+                        });
+
+                        commitBoardActionById(task.boardId, prev => [...prev, ...newImages]);
+                        if (activeBoardIdRef.current === task.boardId) {
+                            setSelectedElementIds([newImages[newImages.length - 1].id]);
+                        }
+                    }
+
+                    if (task.kind === "image.edit") {
+                        updateTaskById(task.id, { progress: "准备素材..." });
+                        const selectedElements = task.selectedElements;
+                        const imageElements = selectedElements.filter(el => el.type === "image") as ImageElement[];
+                        const maskPaths = selectedElements.filter(el => el.type === "path" && el.strokeOpacity && el.strokeOpacity < 1) as PathElement[];
+
+                        const resolvedImageCount = task.imageCount;
+
+                        if (imageElements.length === 1 && maskPaths.length > 0 && selectedElements.length === 1 + maskPaths.length) {
+                            const baseImage = imageElements[0];
+                            const maskData = await rasterizeMask(maskPaths, baseImage);
+
+                            updateTaskById(task.id, { progress: "生成中..." });
+                            const result = await ai.editImage({
+                                images: [{ href: baseImage.href, mimeType: baseImage.mimeType }],
+                                prompt: task.prompt,
+                                mask: { href: maskData.href, mimeType: maskData.mimeType },
+                                aspectRatio: task.imageAspectRatio,
+                                imageSize: task.imageSize,
+                                imageCount: resolvedImageCount,
+                            });
+
+                            const generated = toGeneratedDataUrls(result);
+                            if (!generated.length) throw new Error(result.textResponse || "修复失败：没有返回图片。");
+
+                            updateTaskById(task.id, { progress: "处理图片..." });
+                            const dims = await Promise.all(generated.map((img) => loadImageDimensions(img.href)));
+                            const maskPathIds = new Set(maskPaths.map(p => p.id));
+
+                            const first = generated[0];
+                            const firstDims = dims[0];
+                            const additionalImages: ImageElement[] = [];
+                            let cursorX = baseImage.x + firstDims.width + 20;
+
+                            for (let i = 1; i < generated.length; i++) {
+                                const { href, mimeType } = generated[i];
+                                const { width, height } = dims[i];
+                                additionalImages.push({
+                                    id: generateId(),
+                                    type: "image",
+                                    x: cursorX,
+                                    y: baseImage.y,
+                                    name: `Generated Image ${i + 1}`,
+                                    width,
+                                    height,
+                                    href,
+                                    mimeType,
+                                });
+                                cursorX += width + 20;
+                            }
+
+                            commitBoardActionById(task.boardId, prev => [
+                                ...prev
+                                    .map(el => {
+                                        if (el.id === baseImage.id && el.type === "image") {
+                                            return { ...el, href: first.href, mimeType: first.mimeType, width: firstDims.width, height: firstDims.height };
+                                        }
+                                        return el;
+                                    })
+                                    .filter(el => !maskPathIds.has(el.id)),
+                                ...additionalImages,
+                            ]);
+
+                            if (activeBoardIdRef.current === task.boardId) {
+                                setSelectedElementIds([additionalImages.length ? additionalImages[additionalImages.length - 1].id : baseImage.id]);
+                            }
+                        } else {
+                            const imagePromises = selectedElements.map(el => {
+                                if (el.type === "image") return Promise.resolve({ href: el.href, mimeType: el.mimeType });
+                                if (el.type === "video") return Promise.reject(new Error("视频元素不能用于图片生成。"));
+                                return rasterizeElement(el as Exclude<Element, ImageElement | VideoElement>);
+                            });
+                            const imagesToProcess = await Promise.all(imagePromises);
+
+                            let minX = Infinity, minY = Infinity, maxX = -Infinity;
+                            selectedElements.forEach(el => {
+                                const bounds = getElementBounds(el);
+                                minX = Math.min(minX, bounds.x);
+                                minY = Math.min(minY, bounds.y);
+                                maxX = Math.max(maxX, bounds.x + bounds.width);
+                            });
+                            const cursorX = maxX + 20;
+
+                            updateTaskById(task.id, { progress: "生成中..." });
+                            const result = await ai.editImage({
+                                images: imagesToProcess,
+                                prompt: task.prompt,
+                                aspectRatio: task.imageAspectRatio,
+                                imageSize: task.imageSize,
+                                imageCount: resolvedImageCount,
+                            });
+                            const generated = toGeneratedDataUrls(result);
+                            if (!generated.length) throw new Error(result.textResponse || "生成失败：没有返回图片。");
+
+                            updateTaskById(task.id, { progress: "处理图片..." });
+                            const dims = await Promise.all(generated.map((img) => loadImageDimensions(img.href)));
+
+                            const newImages: ImageElement[] = generated.map((img, idx) => {
+                                const { width, height } = dims[idx];
+                                const x = idx === 0 ? cursorX : cursorX + dims.slice(0, idx).reduce((acc, d) => acc + d.width + 20, 0);
+                                return {
+                                    id: generateId(),
+                                    type: "image",
+                                    x,
+                                    y: minY,
+                                    name: `Generated Image ${idx + 1}`,
+                                    width,
+                                    height,
+                                    href: img.href,
+                                    mimeType: img.mimeType,
+                                };
+                            });
+
+                            commitBoardActionById(task.boardId, prev => [...prev, ...newImages]);
+                            if (activeBoardIdRef.current === task.boardId) {
+                                setSelectedElementIds([newImages[newImages.length - 1].id]);
+                            }
+                        }
+                    }
+
+                    updateTaskById(task.id, { status: "succeeded", finishedAt: Date.now(), progress: undefined, error: undefined });
+                } catch (err) {
+                    const error = err as Error;
+                    updateTaskById(task.id, {
+                        status: "failed",
+                        finishedAt: Date.now(),
+                        progress: undefined,
+                        error: error?.message ? String(error.message) : String(err),
+                    });
+                } finally {
+                    inFlightTaskIdsRef.current.delete(task.id);
+                }
+            })();
+        },
+        [commitBoardActionById, ensureBackendReachable, updateTaskById]
+    );
+
+    useEffect(() => {
+        const inFlight = inFlightTaskIdsRef.current;
+        const runningCount = aiTasks.filter(t => t.status === "running" && inFlight.has(t.id)).length;
+        const available = TASK_CONCURRENCY - runningCount;
+        if (available <= 0) return;
+
+        const startable = aiTasks
+            .filter(t => t.status === "queued" || (t.status === "running" && !inFlight.has(t.id) && !t.finishedAt))
+            .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+            .slice(0, available);
+
+        startable.forEach(startTask);
+    }, [aiTasks, startTask]);
 
     const handleUndo = useCallback(() => {
         updateActiveBoard(board => {
@@ -1426,259 +1838,95 @@ const App: React.FC = () => {
     }, [editingElement?.text, setElements]);
 
 
-    const handleGenerate = async () => {
-        if (!prompt.trim()) {
-            setError('Please enter a prompt.');
+    const handleGenerate = () => {
+        const trimmedPrompt = prompt.trim();
+        if (!trimmedPrompt) {
+            setError("请输入提示词。");
             return;
         }
 
-        setIsLoading(true);
         setError(null);
-        setProgressMessage('Starting generation...');
 
-        if (generationMode === 'video') {
-            try {
-                if (!providerSupportsVideo(aiProvider)) {
-                    setError(t('ai.videoNotSupported'));
-                    setIsLoading(false);
-                    return;
-                }
-                const selectedElements = elements.filter(el => selectedElementIds.includes(el.id));
-                const imageElement = selectedElements.find(el => el.type === 'image') as ImageElement | undefined;
-                
-                if (selectedElementIds.length > 1 || (selectedElementIds.length === 1 && !imageElement)) {
-                    setError('For video generation, please select a single image or no elements.');
-                    setIsLoading(false);
-                    return;
-                }
-                
-                const { videoBlob, mimeType } = await ai.generateVideo({
-                    prompt,
-                    aspectRatio: videoAspectRatio,
-                    onProgress: (message) => setProgressMessage(message),
-                    image: imageElement ? { href: imageElement.href, mimeType: imageElement.mimeType } : undefined,
-                });
-
-                setProgressMessage('Processing video...');
-                const videoUrl = URL.createObjectURL(videoBlob);
-                const video = document.createElement('video');
-                
-                video.onloadedmetadata = () => {
-                    if (!svgRef.current) return;
-                    
-                    let newWidth = video.videoWidth;
-                    let newHeight = video.videoHeight;
-                    const MAX_DIM = 800;
-                    if (newWidth > MAX_DIM || newHeight > MAX_DIM) {
-                        const ratio = newWidth / newHeight;
-                        if (ratio > 1) { // landscape
-                            newWidth = MAX_DIM;
-                            newHeight = MAX_DIM / ratio;
-                        } else { // portrait or square
-                            newHeight = MAX_DIM;
-                            newWidth = MAX_DIM * ratio;
-                        }
-                    }
-
-                    const svgBounds = svgRef.current.getBoundingClientRect();
-                    const screenCenter = { x: svgBounds.left + svgBounds.width / 2, y: svgBounds.top + svgBounds.height / 2 };
-                    const canvasPoint = getCanvasPoint(screenCenter.x, screenCenter.y);
-                    const x = canvasPoint.x - (newWidth / 2);
-                    const y = canvasPoint.y - (newHeight / 2);
-
-                    const newVideoElement: VideoElement = {
-                        id: generateId(), type: 'video', name: 'Generated Video',
-                        x, y,
-                        width: newWidth,
-                        height: newHeight,
-                        href: videoUrl,
-                        mimeType,
-                    };
-
-                    commitAction(prev => [...prev, newVideoElement]);
-                    setSelectedElementIds([newVideoElement.id]);
-                    setIsLoading(false);
-                };
-
-                video.onerror = () => {
-                    setError('Could not load generated video metadata.');
-                    setIsLoading(false);
-                };
-                
-                video.src = videoUrl;
-
-            } catch (err) {
-                 const error = err as Error; 
-                 setError(`Video generation failed: ${error.message}`); 
-                 console.error("Video generation failed:", error);
-                 setIsLoading(false);
-            }
+        if (!svgRef.current) {
+            setError("画布未就绪，请稍后重试。");
             return;
         }
 
+        const svgBounds = svgRef.current.getBoundingClientRect();
+        const screenCenter = { x: svgBounds.left + svgBounds.width / 2, y: svgBounds.top + svgBounds.height / 2 };
+        const canvasCenter = getCanvasPoint(screenCenter.x, screenCenter.y);
 
-        // IMAGE GENERATION LOGIC
-        try {
-            const isEditing = selectedElementIds.length > 0;
-            const resolvedImageCount = imageCount;
+        const base: Omit<AiTaskBase, "kind"> = {
+            id: generateId(),
+            status: "queued",
+            createdAt: Date.now(),
+            boardId: activeBoardId,
+            boardName: activeBoard.name,
+            aiProvider,
+            prompt: trimmedPrompt,
+        };
 
-            const loadImageDimensions = (dataUrl: string): Promise<{ width: number; height: number }> =>
-                new Promise((resolve, reject) => {
-                    const img = new Image();
-                    img.onload = () => resolve({ width: img.width, height: img.height });
-                    img.onerror = () => reject(new Error('Failed to load the generated image.'));
-                    img.src = dataUrl;
-                });
+        if (generationMode === "video") {
+            if (!providerSupportsVideo(aiProvider)) {
+                setError(t("ai.videoNotSupported"));
+                return;
+            }
 
-            const toGeneratedDataUrls = (result: { generatedImages?: Array<{ base64: string; mimeType: string }>; newImageBase64: string | null; newImageMimeType: string | null; }): Array<{ href: string; mimeType: string }> => {
-                if (result.generatedImages?.length) {
-                    return result.generatedImages.map((img) => ({
-                        href: `data:${img.mimeType};base64,${img.base64}`,
-                        mimeType: img.mimeType,
-                    }));
-                }
-                if (result.newImageBase64 && result.newImageMimeType) {
-                    return [{ href: `data:${result.newImageMimeType};base64,${result.newImageBase64}`, mimeType: result.newImageMimeType }];
-                }
-                return [];
+            const selected = elements.filter(el => selectedElementIds.includes(el.id));
+            const imageElement = selected.find(el => el.type === "image") as ImageElement | undefined;
+
+            if (selectedElementIds.length > 1 || (selectedElementIds.length === 1 && !imageElement)) {
+                setError("视频生成：请不要选择元素，或只选择一张图片。");
+                return;
+            }
+
+            const task: AiTask = {
+                ...base,
+                kind: "video.generate",
+                canvasCenter,
+                videoAspectRatio,
+                ...(imageElement ? { image: { href: imageElement.href, mimeType: imageElement.mimeType } } : {}),
             };
 
-            if (isEditing) {
-                const selectedElements = elements.filter(el => selectedElementIds.includes(el.id));
-                const imageElements = selectedElements.filter(el => el.type === 'image') as ImageElement[];
-                const maskPaths = selectedElements.filter(el => el.type === 'path' && el.strokeOpacity && el.strokeOpacity < 1) as PathElement[];
-
-                // Inpainting logic: selection is ONLY one image and one or more mask paths
-                if (imageElements.length === 1 && maskPaths.length > 0 && selectedElements.length === (1 + maskPaths.length)) {
-                    const baseImage = imageElements[0];
-                    const maskData = await rasterizeMask(maskPaths, baseImage);
-
-                    setProgressMessage('Generating...');
-                    const result = await ai.editImage({
-                        images: [{ href: baseImage.href, mimeType: baseImage.mimeType }],
-                        prompt,
-                        mask: { href: maskData.href, mimeType: maskData.mimeType },
-                        aspectRatio: imageAspectRatio,
-                        imageSize,
-                        imageCount: resolvedImageCount,
-                    });
-
-                    const generated = toGeneratedDataUrls(result);
-                    if (!generated.length) throw new Error(result.textResponse || 'Inpainting failed to produce an image.');
-
-                    const dims = await Promise.all(generated.map((img) => loadImageDimensions(img.href)));
-                    const maskPathIds = new Set(maskPaths.map(p => p.id));
-
-                    const first = generated[0];
-                    const firstDims = dims[0];
-                    const additionalImages: ImageElement[] = [];
-                    let cursorX = baseImage.x + firstDims.width + 20;
-
-                    for (let i = 1; i < generated.length; i++) {
-                        const { href, mimeType } = generated[i];
-                        const { width, height } = dims[i];
-                        additionalImages.push({
-                            id: generateId(), type: 'image', x: cursorX, y: baseImage.y, name: `Generated Image ${i + 1}`,
-                            width, height,
-                            href, mimeType,
-                        });
-                        cursorX += width + 20;
-                    }
-
-                    commitAction(prev =>
-                        [
-                            ...prev
-                                .map(el => {
-                                    if (el.id === baseImage.id && el.type === 'image') {
-                                        return { ...el, href: first.href, mimeType: first.mimeType, width: firstDims.width, height: firstDims.height };
-                                    }
-                                    return el;
-                                })
-                                .filter(el => !maskPathIds.has(el.id)),
-                            ...additionalImages,
-                        ]
-                    );
-                    setSelectedElementIds([additionalImages.length ? additionalImages[additionalImages.length - 1].id : baseImage.id]);
-                    return; // End execution for inpainting path
-                }
-                
-                // Regular edit/combine logic
-                const imagePromises = selectedElements.map(el => {
-                    if (el.type === 'image') return Promise.resolve({ href: el.href, mimeType: el.mimeType });
-                    if (el.type === 'video') return Promise.reject(new Error("Cannot use video elements in image generation."));
-                    return rasterizeElement(el as Exclude<Element, ImageElement | VideoElement>);
-                });
-                const imagesToProcess = await Promise.all(imagePromises);
-
-                let minX = Infinity, minY = Infinity, maxX = -Infinity;
-                selectedElements.forEach(el => {
-                    const bounds = getElementBounds(el);
-                    minX = Math.min(minX, bounds.x);
-                    minY = Math.min(minY, bounds.y);
-                    maxX = Math.max(maxX, bounds.x + bounds.width);
-                });
-                let cursorX = maxX + 20;
-
-                setProgressMessage('Generating...');
-                const result = await ai.editImage({ images: imagesToProcess, prompt, aspectRatio: imageAspectRatio, imageSize, imageCount: resolvedImageCount });
-                const generated = toGeneratedDataUrls(result);
-                if (!generated.length) throw new Error(result.textResponse || 'Generation failed to produce an image.');
-                const dims = await Promise.all(generated.map((img) => loadImageDimensions(img.href)));
-
-                const newImages: ImageElement[] = generated.map((img, idx) => {
-                    const { width, height } = dims[idx];
-                    const x = idx === 0 ? cursorX : cursorX + dims.slice(0, idx).reduce((acc, d) => acc + d.width + 20, 0);
-                    return {
-                        id: generateId(), type: 'image', x, y: minY, name: `Generated Image ${idx + 1}`,
-                        width, height,
-                        href: img.href, mimeType: img.mimeType,
-                    };
-                });
-                commitAction(prev => [...prev, ...newImages]);
-                setSelectedElementIds([newImages[newImages.length - 1].id]);
-
-            } else {
-                // Generate from scratch
-                if (!svgRef.current) return;
-                const svgBounds = svgRef.current.getBoundingClientRect();
-                const screenCenter = { x: svgBounds.left + svgBounds.width / 2, y: svgBounds.top + svgBounds.height / 2 };
-                const canvasPoint = getCanvasPoint(screenCenter.x, screenCenter.y);
-
-                setProgressMessage('Generating...');
-                const result = await ai.generateImageFromText({ prompt, aspectRatio: imageAspectRatio, imageSize, imageCount: resolvedImageCount });
-                const generated = toGeneratedDataUrls(result);
-                if (!generated.length) throw new Error(result.textResponse || 'Generation failed to produce an image.');
-                const dims = await Promise.all(generated.map((img) => loadImageDimensions(img.href)));
-
-                const startX = canvasPoint.x - (dims[0].width / 2);
-                let cursorX = startX;
-                const newImages: ImageElement[] = generated.map((img, idx) => {
-                    const { width, height } = dims[idx];
-                    const x = idx === 0 ? startX : cursorX;
-                    const y = canvasPoint.y - (height / 2);
-                    cursorX = x + width + 20;
-                    return {
-                        id: generateId(), type: 'image', x, y, name: `Generated Image ${idx + 1}`,
-                        width, height,
-                        href: img.href, mimeType: img.mimeType,
-                    };
-                });
-                commitAction(prev => [...prev, ...newImages]);
-                setSelectedElementIds([newImages[newImages.length - 1].id]);
-            }
-        } catch (err) {
-            const error = err as Error; 
-            let friendlyMessage = `An error occurred during generation: ${error.message}`;
-
-            if (error.message && (error.message.includes('429') || error.message.toUpperCase().includes('RESOURCE_EXHAUSTED'))) {
-                friendlyMessage = "API quota exceeded. Please check your Google AI Studio plan and billing details, or try again later.";
-            }
-
-            setError(friendlyMessage); 
-            console.error("Generation failed:", error);
-        } finally { 
-            setIsLoading(false); 
+            setAiTasks(prev => [...prev, task]);
+            setIsTaskQueueCollapsed(false);
+            return;
         }
+
+        const isEditing = selectedElementIds.length > 0;
+        if (isEditing) {
+            const selectedElements = elements.filter(el => selectedElementIds.includes(el.id)).map(el => ({ ...el } as Element));
+            if (!selectedElements.length) {
+                setError("未找到选中元素，请重新选择后再试。");
+                return;
+            }
+
+            const task: AiTask = {
+                ...base,
+                kind: "image.edit",
+                selectedElementIds: [...selectedElementIds],
+                selectedElements,
+                imageAspectRatio,
+                imageSize,
+                imageCount,
+            };
+
+            setAiTasks(prev => [...prev, task]);
+            setIsTaskQueueCollapsed(false);
+            return;
+        }
+
+        const task: AiTask = {
+            ...base,
+            kind: "image.generate",
+            canvasCenter,
+            imageAspectRatio,
+            imageSize,
+            imageCount,
+        };
+
+        setAiTasks(prev => [...prev, task]);
+        setIsTaskQueueCollapsed(false);
     };
     
     const handleDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); }, []);
@@ -1727,6 +1975,7 @@ const App: React.FC = () => {
         setContextMenu(null);
         setIsLoading(true);
         setError(null);
+        setProgressMessage('栅格化中...');
 
         try {
             let minX = Infinity, minY = Infinity;
@@ -1764,6 +2013,7 @@ const App: React.FC = () => {
             console.error(err);
         } finally {
             setIsLoading(false);
+            setProgressMessage('');
         }
     };
 
@@ -2026,6 +2276,16 @@ const App: React.FC = () => {
                     </button>
                 </div>
             )}
+            <TaskQueuePanel
+                tasks={aiTasks}
+                collapsed={isTaskQueueCollapsed}
+                onToggleCollapsed={() => setIsTaskQueueCollapsed(v => !v)}
+                onCancelQueued={cancelQueuedTask}
+                onRemoveTask={removeTaskById}
+                onClearFinished={clearFinishedTasks}
+                onFocusBoard={(boardId) => setActiveBoardId(boardId)}
+                getBoardId={(taskId) => aiTasks.find(t => t.id === taskId)?.boardId ?? null}
+            />
             <BoardPanel
                 isOpen={isBoardPanelOpen}
                 onClose={() => setIsBoardPanelOpen(false)}
@@ -2488,7 +2748,7 @@ const App: React.FC = () => {
                 prompt={prompt} 
                 setPrompt={setPrompt} 
                 onGenerate={handleGenerate} 
-                isLoading={isLoading} 
+                isLoading={false} 
                 isSelectionActive={isSelectionActive} 
                 selectedElementCount={selectedElementIds.length}
                 onAddUserEffect={handleAddUserEffect}
