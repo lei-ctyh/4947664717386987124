@@ -13,13 +13,6 @@ const dataUrlToBase64 = (href) => {
 // 统一把 Error/未知异常转换成可日志输出的字符串。
 const errorToMessage = (error) => (error instanceof Error ? error.message : String(error));
 
-// 字符串截断（用于日志预览）：避免提示词/错误信息过长影响可读性。
-const truncate = (value, maxLen) => {
-  const text = String(value ?? "");
-  if (text.length <= maxLen) return text;
-  return `${text.slice(0, Math.max(0, maxLen - 1))}…`;
-};
-
 // 日志截断：避免把超长 HTTP Body/文本一次性打爆终端或日志系统。
 const truncateText = (text, maxLen) => {
   const s = String(text ?? "");
@@ -28,11 +21,50 @@ const truncateText = (text, maxLen) => {
   return { text: `${s.slice(0, Math.max(0, maxLen - 1))}…`, truncated: true };
 };
 
-// 控制“底层原始 HTTP body”日志最大字符数（默认 200000）。
+// 控制“底层原始 HTTP body”日志最大字符数（默认 0=不截断）。
 const getHttpBodyLogMaxChars = () => {
   const raw = process.env.BANANAPOD_HTTP_BODY_LOG_MAX_CHARS;
   const n = raw ? Number(raw) : NaN;
-  return Number.isFinite(n) && n > 0 ? n : 200000;
+  return Number.isFinite(n) && n > 0 ? n : 0;
+};
+
+// 把文本中的 data URL base64 片段替换为长度占位（保留 mimeType 等前缀便于排查）。
+// 示例：data:image/jpeg;base64,xxxxx -> data:image/jpeg;base64,<base64 len=12345>
+const redactDataUrlsInText = (text) => {
+  const s = String(text ?? "");
+  if (!s.includes("data:") || !s.includes(";base64,")) return s;
+
+  let out = "";
+  let i = 0;
+  while (i < s.length) {
+    const dataIndex = s.indexOf("data:", i);
+    if (dataIndex < 0) break;
+
+    const base64Index = s.indexOf(";base64,", dataIndex);
+    if (base64Index < 0) break;
+
+    const dataStart = base64Index + ";base64,".length;
+    let dataEnd = dataStart;
+    while (dataEnd < s.length) {
+      const ch = s.charCodeAt(dataEnd);
+      const isBase64Char =
+        (ch >= 48 && ch <= 57) || // 0-9
+        (ch >= 65 && ch <= 90) || // A-Z
+        (ch >= 97 && ch <= 122) || // a-z
+        ch === 43 || // +
+        ch === 47 || // /
+        ch === 61; // =
+      if (!isBase64Char) break;
+      dataEnd++;
+    }
+
+    out += s.slice(i, dataStart);
+    out += `<base64 len=${Math.max(0, dataEnd - dataStart)}>`;
+    i = dataEnd;
+  }
+
+  out += s.slice(i);
+  return out;
 };
 
 // 脱敏：把图片/音视频等 inlineData.data 的 base64 替换为长度占位，避免泄露内容且避免日志过大。
@@ -43,6 +75,10 @@ const redactJsonForLog = (obj) => {
       if (typeof value === "object" && value !== null) {
         if (seen.has(value)) return "[Circular]";
         seen.add(value);
+      }
+      // 有些网关/模型会把图片以 data URL（data:image/...;base64,xxxx）塞进 text 字段里，这里也要脱敏。
+      if (key === "text" && typeof value === "string" && value.includes(";base64,")) {
+        return redactDataUrlsInText(value);
       }
       if (
         key === "data" &&
@@ -82,7 +118,8 @@ const tryReadResponseInternalBody = async (response) => {
       const json = JSON.parse(bodyTextMaybeTruncated);
       bodyTextRedacted = JSON.stringify(redactJsonForLog(json), null, 2);
     } catch {
-      // keep as-is
+      // 非 JSON（或 JSON 被截断导致无法解析）时，至少对 data URL base64 做一次替换。
+      bodyTextRedacted = redactDataUrlsInText(bodyTextMaybeTruncated);
     }
 
     return {
@@ -115,7 +152,7 @@ const normalizeAspectRatio = (value) => {
   return ratio;
 };
 
-// 兼容前端的 1K/2K/4K：映射为 SDK 更常见的 "1024x1024" 这种格式。
+// imageSize 直接透传 1K/2K/4K（部分网关/模型要求这个枚举值）；同时也兼容 "1024x1024" 这种格式。
 const normalizeImageSize = (value) => {
   const size = String(value ?? "").trim();
   if (!size) return undefined;
@@ -124,6 +161,9 @@ const normalizeImageSize = (value) => {
     "1K": "1K",
     "2K": "2K",
     "4K": "4K",
+    "1k": "1K",
+    "2k": "2K",
+    "4k": "4K",
   };
   return map[size] || undefined;
 };
@@ -137,29 +177,28 @@ const buildImageConfig = ({ aspectRatio, imageSize } = {}) => {
   return Object.keys(next).length ? next : undefined;
 };
 
-const summarizePartsForLog = (parts, { maxParts = 8 } = {}) => {
-  // parts 里可能含有大段 base64（inlineData.data），这里只记录是否有 inlineData、mimeType、长度等摘要信息。
+const summarizePartsForLog = (parts) => {
+  // parts 里可能含有大段 base64（inlineData.data），这里只记录 text（会脱敏 data URL）、inlineData 的 mimeType 与长度等信息。
   const list = Array.isArray(parts) ? parts : [];
-  const sample = list.slice(0, Math.max(0, maxParts)).map((p) => ({
-    hasText: typeof p?.text === "string" && p.text.length > 0,
-    textPreview: typeof p?.text === "string" ? truncate(p.text, 120) : null,
-    hasInlineData: Boolean(p?.inlineData?.data && p?.inlineData?.mimeType),
-    inlineMimeType: typeof p?.inlineData?.mimeType === "string" ? p.inlineData.mimeType : null,
-    inlineDataLength: typeof p?.inlineData?.data === "string" ? p.inlineData.data.length : null,
-  }));
   return {
     partsCount: list.length,
-    partsSample: sample,
-    partsTruncated: list.length > sample.length,
+    parts: list.map((p) => ({
+      hasText: typeof p?.text === "string" && p.text.length > 0,
+      textLength: typeof p?.text === "string" ? p.text.length : null,
+      text: typeof p?.text === "string" ? redactDataUrlsInText(p.text) : null,
+      hasInlineData: Boolean(p?.inlineData?.data && p?.inlineData?.mimeType),
+      inlineMimeType: typeof p?.inlineData?.mimeType === "string" ? p.inlineData.mimeType : null,
+      inlineDataLength: typeof p?.inlineData?.data === "string" ? p.inlineData.data.length : null,
+    })),
   };
 };
 
 const summarizeGenerateContentParamsForLog = (params) => {
-  // 只打印 generateContent 的“请求摘要”，避免泄露用户图片/超长文本。
+  // 打印 generateContent 的“请求结构”，图片/音视频 base64 会脱敏（保留长度）。
   const contents = Array.isArray(params?.contents) ? params.contents : [];
-  const contentsSample = contents.slice(0, 2).map((c) => ({
+  const contentsAll = contents.map((c) => ({
     role: typeof c?.role === "string" ? c.role : null,
-    ...summarizePartsForLog(c?.parts, { maxParts: 6 }),
+    ...summarizePartsForLog(c?.parts),
   }));
 
   const config = params?.config && typeof params.config === "object" ? params.config : null;
@@ -173,7 +212,7 @@ const summarizeGenerateContentParamsForLog = (params) => {
   return {
     model: typeof params?.model === "string" ? params.model : null,
     contentsCount: contents.length,
-    contentsSample,
+    contents: contentsAll,
     responseModalities,
     imageConfig: imageConfig
       ? {
@@ -193,21 +232,21 @@ const summarizeGenerateContentParamsForLog = (params) => {
 };
 
 const summarizeResponseForLog = (response) => {
-  // 只打印 generateContent 的“响应摘要”：候选数、finishReason、parts 摘要、promptFeedback 等。
+  // 打印 generateContent 的“响应结构”：候选数、finishReason、parts 信息、promptFeedback 等。
   const candidates = Array.isArray(response?.candidates) ? response.candidates : [];
-  const first = candidates[0] ?? null;
-  const parts = Array.isArray(first?.content?.parts) ? first.content.parts : [];
-  const partsSummary = summarizePartsForLog(parts, { maxParts: 8 });
 
   return {
     candidatesCount: candidates.length,
-    finishReason:
-      typeof first?.finishReason === "string"
-        ? first.finishReason
-        : typeof first?.finishReason === "number"
-          ? String(first.finishReason)
-          : null,
-    ...partsSummary,
+    candidates: candidates.map((c, idx) => ({
+      index: idx,
+      finishReason:
+        typeof c?.finishReason === "string"
+          ? c.finishReason
+          : typeof c?.finishReason === "number"
+            ? String(c.finishReason)
+            : null,
+      ...summarizePartsForLog(c?.content?.parts),
+    })),
     promptFeedback: response?.promptFeedback
       ? {
           blockReason:
@@ -226,6 +265,47 @@ const summarizeResponseForLog = (response) => {
   };
 };
 
+// 从文本中提取 data:image/...;base64,...（支持 Markdown ![...](data:...) 这种形式）。
+const pickImagesFromText = (text) => {
+  const s = String(text ?? "");
+  if (!s.includes("data:") || !s.includes(";base64,")) return [];
+
+  const images = [];
+  let i = 0;
+  while (i < s.length) {
+    const dataIndex = s.indexOf("data:", i);
+    if (dataIndex < 0) break;
+
+    const base64Index = s.indexOf(";base64,", dataIndex);
+    if (base64Index < 0) break;
+
+    const mimeType = s.slice(dataIndex + 5, base64Index).trim();
+    const dataStart = base64Index + ";base64,".length;
+
+    let dataEnd = dataStart;
+    while (dataEnd < s.length) {
+      const ch = s.charCodeAt(dataEnd);
+      const isBase64Char =
+        (ch >= 48 && ch <= 57) || // 0-9
+        (ch >= 65 && ch <= 90) || // A-Z
+        (ch >= 97 && ch <= 122) || // a-z
+        ch === 43 || // +
+        ch === 47 || // /
+        ch === 61; // =
+      if (!isBase64Char) break;
+      dataEnd++;
+    }
+
+    if (mimeType.startsWith("image/") && dataEnd > dataStart) {
+      images.push({ base64: s.slice(dataStart, dataEnd), mimeType });
+    }
+
+    i = dataEnd;
+  }
+
+  return images;
+};
+
 const pickGeneratedImagesFromResponse = (response) => {
   // 从 candidates[0].content.parts 中提取所有 inlineData 图片（如果模型/网关只返回文本则会为空）。
   const candidate = response?.candidates?.[0];
@@ -234,6 +314,10 @@ const pickGeneratedImagesFromResponse = (response) => {
   for (const part of parts) {
     if (part?.inlineData?.data && part?.inlineData?.mimeType) {
       images.push({ base64: part.inlineData.data, mimeType: part.inlineData.mimeType });
+    }
+    // 兼容：有些网关会把图片以 data URL 写进 text（例如：![image](data:image/jpeg;base64,...)）。
+    if (typeof part?.text === "string" && part.text.includes(";base64,")) {
+      images.push(...pickImagesFromText(part.text));
     }
   }
   return images;
@@ -435,12 +519,13 @@ export class GeminiRunner {
           platform: usedPlatform
             ? { id: usedPlatform.id, baseUrl: usedPlatform.baseUrl, model: usedPlatform.model }
             : null,
-          request: {
-            promptPreview: truncate(request?.prompt, 120),
-            aspectRatio: request?.aspectRatio ?? null,
-            imageSize: request?.imageSize ?? null,
-            imageCount: request?.imageCount ?? null,
-          },
+	          request: {
+	            promptLength: String(request?.prompt || "").length,
+	            prompt: redactDataUrlsInText(String(request?.prompt || "")),
+	            aspectRatio: request?.aspectRatio ?? null,
+	            imageSize: request?.imageSize ?? null,
+	            imageCount: request?.imageCount ?? null,
+	          },
           response: summarizeResponseForLog(response),
         });
         const err = new Error("Gemini response did not include image data.");
@@ -524,22 +609,32 @@ export class GeminiRunner {
       });
 
       const images = pickGeneratedImagesFromResponse(response);
-      if (!images.length) {
-        const err = new Error("Gemini response did not include image data.");
-        err.statusCode = 502;
-        throw err;
+      const candidatesCount = Array.isArray(response?.candidates) ? response.candidates.length : 0;
+      const imageCount = images.length;
+      if (!imageCount) {
+        const errorMessage = "Gemini response did not include image data.";
+        console.warn("[gemini] probePlatformGenerateImage failed", {
+          traceId,
+          platform: { id: platform.id, baseUrl: platform.baseUrl, model: platform.model },
+          candidatesCount,
+          imageCount,
+          error: errorMessage,
+        });
+        return { ok: false, latencyMs: Date.now() - startedAt, errorMessage, traceId, candidatesCount, imageCount };
       }
 
-      return { ok: true, latencyMs: Date.now() - startedAt, errorMessage: null };
+      return { ok: true, latencyMs: Date.now() - startedAt, errorMessage: null, traceId, candidatesCount, imageCount };
     } catch (error) {
       const name = typeof error?.name === "string" ? error.name : "";
       const msg = errorToMessage(error);
       const isTimeout = /timeout/i.test(name) || /timed out|timeout/i.test(msg);
-      return {
-        ok: false,
-        latencyMs: Date.now() - startedAt,
-        errorMessage: isTimeout ? `probe timeout after ${timeoutMs}ms` : msg,
-      };
+      const errorMessage = isTimeout ? `probe timeout after ${timeoutMs}ms` : msg;
+      console.warn("[gemini] probePlatformGenerateImage failed", {
+        traceId,
+        platform: { id: platform.id, baseUrl: platform.baseUrl, model: platform.model },
+        error: errorMessage,
+      });
+      return { ok: false, latencyMs: Date.now() - startedAt, errorMessage, traceId, candidatesCount: 0, imageCount: 0 };
     }
   }
 }

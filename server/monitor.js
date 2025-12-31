@@ -8,6 +8,12 @@ export class GeminiMonitor {
     this.timer = null;
   }
 
+  getProbeMode() {
+    const raw = String(process.env.BANANAPOD_MONITOR_MODE || "").trim().toLowerCase();
+    if (raw === "image" || raw === "generateimage") return "image";
+    return "connectivity";
+  }
+
   getStatusSnapshot() {
     return Array.from(this.statusById.values()).sort((a, b) => a.id.localeCompare(b.id));
   }
@@ -18,17 +24,25 @@ export class GeminiMonitor {
 
     const nowIso = new Date().toISOString();
     const next = [];
+    const mode = this.getProbeMode();
 
     for (const platform of platforms) {
-      const result = await runner.probePlatformGenerateImage(platform, this.probeTimeoutMs);
+      const result =
+        mode === "image"
+          ? await runner.probePlatformGenerateImage(platform, this.probeTimeoutMs)
+          : await runner.probePlatform(platform, this.probeTimeoutMs);
       const status = {
         id: platform.id,
         baseUrl: platform.baseUrl,
         model: platform.model,
         checkedAt: nowIso,
+        mode,
         ok: result.ok,
         latencyMs: result.latencyMs,
         errorMessage: result.errorMessage,
+        traceId: result.traceId || null,
+        candidatesCount: Number.isFinite(result.candidatesCount) ? result.candidatesCount : null,
+        imageCount: Number.isFinite(result.imageCount) ? result.imageCount : null,
       };
       this.statusById.set(platform.id, status);
       next.push(status);

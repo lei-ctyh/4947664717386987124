@@ -7,6 +7,10 @@ import { clearSessionCookie, createSessionCookie, isLoggedIn, verifyPassword } f
 import { getGeminiPlatforms, getGeminiPlatformsRedacted, upsertGeminiPlatforms } from "./config.js";
 import { GeminiRunner } from "./gemini.js";
 import { GeminiMonitor } from "./monitor.js";
+import { installConsoleFileLogger } from "./logger.js";
+
+// 把所有 console 输出同时写入日志文件（默认 ./logs/bananapod.log）。
+installConsoleFileLogger();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
