@@ -28,6 +28,18 @@ export interface ImageElement extends CanvasElementBase {
   height: number;
   mimeType: string;
   borderRadius?: number;
+  /** 图片原始分辨率（生成/导入时的真实像素），用于展示与重试。 */
+  originalWidth?: number;
+  originalHeight?: number;
+  /** 生成/编辑该图片所用提示词（若有）。 */
+  prompt?: string;
+  /** 该图片来源：文生图或图生图（用于重试）。 */
+  aiSourceKind?: 'generate' | 'edit';
+  /** 生成该图片时的参数（用于重试）。 */
+  aiAspectRatio?: string;
+  aiImageSize?: '1K' | '2K' | '4K';
+  /** 生成/编辑时的输入图片（用于重试把“引用图片”一并传回后端）。 */
+  aiInputImage?: { href: string; mimeType: string };
 }
 
 export interface VideoElement extends CanvasElementBase {

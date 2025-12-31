@@ -373,6 +373,19 @@ type AiTaskBase = {
     error?: string;
     placeholderElementIds?: string[];
     placeholderSize?: number;
+    replaceImageElementId?: string;
+    replaceOriginalImage?: {
+        href: string;
+        mimeType: string;
+        name?: string;
+        originalWidth?: number;
+        originalHeight?: number;
+        prompt?: string;
+        aiSourceKind?: "generate" | "edit";
+        aiAspectRatio?: string;
+        aiImageSize?: "1K" | "2K" | "4K";
+        aiInputImage?: { href: string; mimeType: string };
+    };
 };
 
 type AiTask =
@@ -414,6 +427,7 @@ const App: React.FC = () => {
     const [selectedElementIds, setSelectedElementIds] = useState<string[]>([]);
     const [selectionBox, setSelectionBox] = useState<Rect | null>(null);
     const [prompt, setPrompt] = useState('');
+    const [selectedImagePromptDraft, setSelectedImagePromptDraft] = useState<string>('');
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [isSettingsPanelOpen, setIsSettingsPanelOpen] = useState(false);
@@ -484,6 +498,8 @@ const App: React.FC = () => {
     const elementsRef = useRef(elements);
     const svgRef = useRef<SVGSVGElement>(null);
     const editingTextareaRef = useRef<HTMLTextAreaElement>(null);
+    const selectedImagePromptElementIdRef = useRef<string | null>(null);
+    const selectedImagePromptEditingRef = useRef<boolean>(false);
     const previousToolRef = useRef<Tool>('select');
     const spacebarDownTime = useRef<number | null>(null);
     elementsRef.current = elements;
@@ -495,6 +511,32 @@ const App: React.FC = () => {
         setSelectionBox(null);
         setPrompt('');
     }, [activeBoardId]);
+
+    useEffect(() => {
+        if (selectedImagePromptEditingRef.current) return;
+
+        if (selectedElementIds.length !== 1) {
+            selectedImagePromptElementIdRef.current = null;
+            setSelectedImagePromptDraft('');
+            return;
+        }
+
+        const element = elements.find(el => el.id === selectedElementIds[0]);
+        if (!element || element.type !== 'image') {
+            selectedImagePromptElementIdRef.current = null;
+            setSelectedImagePromptDraft('');
+            return;
+        }
+
+        const next = String((element as ImageElement).prompt || '');
+        if (selectedImagePromptElementIdRef.current !== element.id) {
+            selectedImagePromptElementIdRef.current = element.id;
+            setSelectedImagePromptDraft(next);
+            return;
+        }
+
+        setSelectedImagePromptDraft(prev => (prev === next ? prev : next));
+    }, [elements, selectedElementIds]);
     
     useEffect(() => {
         try {
@@ -684,6 +726,47 @@ const App: React.FC = () => {
         return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
     };
 
+    const buildGeneratingPlaceholderDataUrlForRect = (width: number, height: number, label = "Generating..."): string => {
+        const w = Math.max(64, Math.floor(width || DEFAULT_PLACEHOLDER_SIZE));
+        const h = Math.max(64, Math.floor(height || DEFAULT_PLACEHOLDER_SIZE));
+        const size = Math.min(w, h);
+        const cx = w / 2;
+        const cy = h / 2;
+        const r = Math.max(10, Math.floor(size * 0.06));
+        const stroke = Math.max(2, Math.floor(size * 0.012));
+        const font1 = Math.max(12, Math.floor(size * 0.045));
+        const font2 = Math.max(10, Math.floor(size * 0.032));
+
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+  <defs>
+    <linearGradient id="bp-g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1f1636"/>
+      <stop offset="0.55" stop-color="#4b2a8f"/>
+      <stop offset="1" stop-color="#2b1a55"/>
+    </linearGradient>
+    <radialGradient id="bp-glow" cx="35%" cy="30%" r="80%">
+      <stop offset="0" stop-color="rgba(255,255,255,0.18)"/>
+      <stop offset="1" stop-color="rgba(255,255,255,0)"/>
+    </radialGradient>
+    <filter id="bp-soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="10" />
+    </filter>
+  </defs>
+  <rect width="100%" height="100%" rx="8" fill="url(#bp-g)"/>
+  <rect width="100%" height="100%" rx="8" fill="url(#bp-glow)"/>
+  <g transform="translate(${cx} ${cy})">
+    <circle r="${r}" fill="none" stroke="rgba(255,255,255,0.55)" stroke-width="${stroke}" stroke-linecap="round" stroke-dasharray="${Math.floor(Math.PI * 2 * r * 0.72)} ${Math.floor(Math.PI * 2 * r * 0.28)}">
+      <animateTransform attributeName="transform" type="rotate" from="0 0 0" to="360 0 0" dur="1.1s" repeatCount="indefinite"/>
+    </circle>
+    <circle r="${Math.max(6, Math.floor(r * 0.42))}" fill="rgba(255,255,255,0.12)" filter="url(#bp-soft)"/>
+  </g>
+  <text x="50%" y="${Math.floor(h * 0.58)}" text-anchor="middle" fill="rgba(255,255,255,0.78)" font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial" font-size="${font1}" font-weight="600">${label}</text>
+  <text x="50%" y="${Math.floor(h * 0.66)}" text-anchor="middle" fill="rgba(255,255,255,0.55)" font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial" font-size="${font2}">•••</text>
+</svg>`;
+
+        return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+    };
+
     const getElementsBounds = (list: Element[]): { minX: number; minY: number; maxX: number; maxY: number } => {
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         list.forEach(el => {
@@ -718,6 +801,46 @@ const App: React.FC = () => {
         commitBoardActionById(task.boardId, prev => [...prev, ...placeholders]);
         updateTaskById(taskId, { placeholderElementIds: ids, placeholderSize: size });
         return ids;
+    }, [commitBoardActionById, updateTaskById]);
+
+    const beginReplaceImageWithPlaceholder = useCallback((taskId: string, task: AiTask, imageElementId: string) => {
+        let original: AiTaskBase["replaceOriginalImage"] | null = null;
+
+        commitBoardActionById(task.boardId, prev =>
+            prev.map(el => {
+                if (el.id !== imageElementId) return el;
+                if (el.type !== "image") return el;
+
+                original = {
+                    href: el.href,
+                    mimeType: el.mimeType,
+                    name: el.name,
+                    originalWidth: el.originalWidth,
+                    originalHeight: el.originalHeight,
+                    prompt: el.prompt,
+                    aiSourceKind: el.aiSourceKind,
+                    aiAspectRatio: el.aiAspectRatio,
+                    aiImageSize: el.aiImageSize,
+                    aiInputImage: el.aiInputImage,
+                };
+
+                const placeholderHref = buildGeneratingPlaceholderDataUrlForRect(el.width, el.height);
+                return {
+                    ...el,
+                    href: placeholderHref,
+                    mimeType: "image/svg+xml",
+                    name: "Generating...",
+                };
+            })
+        );
+
+        updateTaskById(taskId, {
+            replaceImageElementId: imageElementId,
+            replaceOriginalImage: original ?? undefined,
+            placeholderElementIds: [imageElementId],
+        });
+
+        return { placeholderIds: [imageElementId], original };
     }, [commitBoardActionById, updateTaskById]);
 
     const ensureBackendReachable = useCallback(async () => {
@@ -769,11 +892,25 @@ const App: React.FC = () => {
 
             (async () => {
                 let placeholderIds: string[] = [];
+                let replaceImageElementId: string | null = null;
+                let replaceOriginal: AiTaskBase["replaceOriginalImage"] | null = null;
+                let boardIdForTask: string | null = null;
+
                 try {
                     const current = aiTasksRef.current.find(t => t.id === task.id);
                     if (!current || current.status !== "running") return;
+                    boardIdForTask = current.boardId;
 
                     placeholderIds = Array.isArray(current.placeholderElementIds) ? current.placeholderElementIds : [];
+                    replaceImageElementId = current.replaceImageElementId || null;
+                    replaceOriginal = current.replaceOriginalImage || null;
+
+                    if (!placeholderIds.length && replaceImageElementId) {
+                        const info = beginReplaceImageWithPlaceholder(task.id, current, replaceImageElementId);
+                        placeholderIds = info.placeholderIds;
+                        replaceOriginal = info.original;
+                    }
+
                     if (!placeholderIds.length) {
                         if (current.kind === "image.generate") {
                             const size = current.placeholderSize ?? DEFAULT_PLACEHOLDER_SIZE;
@@ -807,7 +944,7 @@ const App: React.FC = () => {
                     updateTaskById(task.id, { progress: "检查后端..." });
                     await ensureBackendReachable();
 
-                    const ai = getAiService(task.aiProvider);
+                    const ai = getAiService(current.aiProvider);
 
                     if (task.kind === "video.generate") {
                         updateTaskById(task.id, { progress: "生成中..." });
@@ -874,47 +1011,80 @@ const App: React.FC = () => {
 
                         updateTaskById(task.id, { progress: "处理图片..." });
                         const dims = await Promise.all(generated.map((img) => loadImageDimensions(img.href)));
-                        const newImageIds = generated.map(() => generateId());
 
                         const placeholderIdSet = new Set(placeholderIds);
-                        commitBoardActionById(task.boardId, prev => {
-                            const placeholdersInOrder = placeholderIds
-                                .map((id) => prev.find((el) => el.id === id))
-                                .filter((el): el is ImageElement => Boolean(el && el.type === "image"));
 
-                            const startX = task.canvasCenter.x - dims[0].width / 2;
-                            let cursorX = startX;
+                        if (replaceImageElementId) {
+                            const first = generated[0];
+                            const firstDims = dims[0];
+                            commitBoardActionById(task.boardId, prev =>
+                                prev
+                                    .filter(el => !(placeholderIdSet.has(el.id) && el.id !== replaceImageElementId))
+                                    .map(el => {
+                                        if (el.id !== replaceImageElementId) return el;
+                                        if (el.type !== "image") return el;
+                                        return {
+                                            ...el,
+                                            href: first.href,
+                                            mimeType: first.mimeType,
+                                            name: el.name === "Generating..." ? "Generated Image" : el.name,
+                                            originalWidth: firstDims.width,
+                                            originalHeight: firstDims.height,
+                                            prompt: task.prompt,
+                                            aiSourceKind: "generate" as const,
+                                            aiAspectRatio: task.imageAspectRatio,
+                                            aiImageSize: task.imageSize,
+                                        };
+                                    })
+                            );
+                            if (activeBoardIdRef.current === task.boardId) setSelectedElementIds([replaceImageElementId]);
+                        } else {
+                            const newImageIds = generated.map(() => generateId());
+                            commitBoardActionById(task.boardId, prev => {
+                                const placeholdersInOrder = placeholderIds
+                                    .map((id) => prev.find((el) => el.id === id))
+                                    .filter((el): el is ImageElement => Boolean(el && el.type === "image"));
 
-                            const newImages: ImageElement[] = generated.map((img, idx) => {
-                                const { width, height } = dims[idx];
-                                const fallbackX = idx === 0 ? startX : cursorX;
-                                const fallbackY = task.canvasCenter.y - height / 2;
-                                cursorX = fallbackX + width + 20;
+                                const startX = task.canvasCenter.x - dims[0].width / 2;
+                                let cursorX = startX;
 
-                                const ph = placeholdersInOrder[idx];
-                                const x = ph ? ph.x + (ph.width - width) / 2 : fallbackX;
-                                const y = ph ? ph.y + (ph.height - height) / 2 : fallbackY;
+                                const newImages: ImageElement[] = generated.map((img, idx) => {
+                                    const { width, height } = dims[idx];
+                                    const fallbackX = idx === 0 ? startX : cursorX;
+                                    const fallbackY = task.canvasCenter.y - height / 2;
+                                    cursorX = fallbackX + width + 20;
 
-                                return {
-                                    id: newImageIds[idx],
-                                    type: "image",
-                                    x,
-                                    y,
-                                    name: `Generated Image ${idx + 1}`,
-                                    width,
-                                    height,
-                                    href: img.href,
-                                    mimeType: img.mimeType,
-                                };
+                                    const ph = placeholdersInOrder[idx];
+                                    const x = ph ? ph.x + (ph.width - width) / 2 : fallbackX;
+                                    const y = ph ? ph.y + (ph.height - height) / 2 : fallbackY;
+
+                                    return {
+                                        id: newImageIds[idx],
+                                        type: "image",
+                                        x,
+                                        y,
+                                        name: `Generated Image ${idx + 1}`,
+                                        width,
+                                        height,
+                                        href: img.href,
+                                        mimeType: img.mimeType,
+                                        originalWidth: width,
+                                        originalHeight: height,
+                                        prompt: task.prompt,
+                                        aiSourceKind: "generate" as const,
+                                        aiAspectRatio: task.imageAspectRatio,
+                                        aiImageSize: task.imageSize,
+                                    };
+                                });
+
+                                return [
+                                    ...prev.filter(el => !placeholderIdSet.has(el.id)),
+                                    ...newImages,
+                                ];
                             });
-
-                            return [
-                                ...prev.filter(el => !placeholderIdSet.has(el.id)),
-                                ...newImages,
-                            ];
-                        });
-                        if (activeBoardIdRef.current === task.boardId) {
-                            setSelectedElementIds([newImageIds[newImageIds.length - 1]]);
+                            if (activeBoardIdRef.current === task.boardId) {
+                                setSelectedElementIds([newImageIds[newImageIds.length - 1]]);
+                            }
                         }
                     }
 
@@ -928,6 +1098,7 @@ const App: React.FC = () => {
 
                         if (imageElements.length === 1 && maskPaths.length > 0 && selectedElements.length === 1 + maskPaths.length) {
                             const baseImage = imageElements[0];
+                            const aiInputImage = { href: baseImage.href, mimeType: baseImage.mimeType };
                             const maskData = await rasterizeMask(maskPaths, baseImage);
 
                             updateTaskById(task.id, { progress: "生成中..." });
@@ -985,14 +1156,34 @@ const App: React.FC = () => {
                                         height,
                                         href,
                                         mimeType,
+                                        originalWidth: width,
+                                        originalHeight: height,
+                                        prompt: task.prompt,
+                                        aiSourceKind: "edit" as const,
+                                        aiAspectRatio: task.imageAspectRatio,
+                                        aiImageSize: task.imageSize,
+                                        aiInputImage,
                                     });
                                 }
 
                                 const next = prev
-                                    .filter(el => !placeholderIdSet.has(el.id))
+                                    .filter(el => !(placeholderIdSet.has(el.id) && el.id !== replaceImageElementId))
                                     .map(el => {
                                         if (el.id === baseImage.id && el.type === "image") {
-                                            return { ...el, href: first.href, mimeType: first.mimeType, width: firstDims.width, height: firstDims.height };
+                                            return {
+                                                ...el,
+                                                href: first.href,
+                                                mimeType: first.mimeType,
+                                                width: firstDims.width,
+                                                height: firstDims.height,
+                                                originalWidth: firstDims.width,
+                                                originalHeight: firstDims.height,
+                                                prompt: task.prompt,
+                                                aiSourceKind: "edit" as const,
+                                                aiAspectRatio: task.imageAspectRatio,
+                                                aiImageSize: task.imageSize,
+                                                aiInputImage,
+                                            };
                                         }
                                         return el;
                                     })
@@ -1012,6 +1203,10 @@ const App: React.FC = () => {
                                 return rasterizeElement(el as Exclude<Element, ImageElement | VideoElement>);
                             });
                             const imagesToProcess = await Promise.all(imagePromises);
+                            const primaryInput = imageElements[0]
+                                ? { href: imageElements[0].href, mimeType: imageElements[0].mimeType }
+                                : imagesToProcess[0];
+                            const aiInputImage = primaryInput ? { href: primaryInput.href, mimeType: primaryInput.mimeType } : undefined;
 
                             let minX = Infinity, minY = Infinity, maxX = -Infinity;
                             selectedElements.forEach(el => {
@@ -1035,49 +1230,84 @@ const App: React.FC = () => {
 
                             updateTaskById(task.id, { progress: "处理图片..." });
                             const dims = await Promise.all(generated.map((img) => loadImageDimensions(img.href)));
-                            const newImageIds = generated.map(() => generateId());
 
                             const placeholderIdSet = new Set(placeholderIds);
-                            commitBoardActionById(task.boardId, prev => {
-                                const placeholdersInOrder = placeholderIds
-                                    .map((id) => prev.find((el) => el.id === id))
-                                    .filter((el): el is ImageElement => Boolean(el && el.type === "image"));
 
-                                const selectedNow = prev.filter(el => task.selectedElementIds.includes(el.id));
-                                const b = getElementsBounds(selectedNow.length ? selectedNow : selectedElements);
-                                const fallbackStartX = Number.isFinite(b.maxX) ? b.maxX + PLACEHOLDER_GAP : cursorX;
-                                const fallbackY = Number.isFinite(b.minY) ? b.minY : minY;
+                            if (replaceImageElementId) {
+                                const first = generated[0];
+                                const firstDims = dims[0];
+                                commitBoardActionById(task.boardId, prev =>
+                                    prev
+                                        .filter(el => !(placeholderIdSet.has(el.id) && el.id !== replaceImageElementId))
+                                        .map(el => {
+                                            if (el.id !== replaceImageElementId) return el;
+                                            if (el.type !== "image") return el;
+                                            return {
+                                                ...el,
+                                                href: first.href,
+                                                mimeType: first.mimeType,
+                                                name: el.name === "Generating..." ? "Generated Image" : el.name,
+                                                originalWidth: firstDims.width,
+                                                originalHeight: firstDims.height,
+                                                prompt: task.prompt,
+                                                aiSourceKind: "edit" as const,
+                                                aiAspectRatio: task.imageAspectRatio,
+                                                aiImageSize: task.imageSize,
+                                                aiInputImage,
+                                            };
+                                        })
+                                );
+                                if (activeBoardIdRef.current === task.boardId) setSelectedElementIds([replaceImageElementId]);
+                            } else {
+                                const newImageIds = generated.map(() => generateId());
+                                commitBoardActionById(task.boardId, prev => {
+                                    const placeholdersInOrder = placeholderIds
+                                        .map((id) => prev.find((el) => el.id === id))
+                                        .filter((el): el is ImageElement => Boolean(el && el.type === "image"));
 
-                                let cursor = fallbackStartX;
-                                const newImages: ImageElement[] = generated.map((img, idx) => {
-                                    const { width, height } = dims[idx];
-                                    const fallbackX = idx === 0 ? cursor : cursor;
-                                    cursor = fallbackX + width + PLACEHOLDER_GAP;
+                                    const selectedNow = prev.filter(el => task.selectedElementIds.includes(el.id));
+                                    const b = getElementsBounds(selectedNow.length ? selectedNow : selectedElements);
+                                    const fallbackStartX = Number.isFinite(b.maxX) ? b.maxX + PLACEHOLDER_GAP : cursorX;
+                                    const fallbackY = Number.isFinite(b.minY) ? b.minY : minY;
 
-                                    const ph = placeholdersInOrder[idx];
-                                    const x = ph ? ph.x + (ph.width - width) / 2 : fallbackX;
-                                    const y = ph ? ph.y + (ph.height - height) / 2 : fallbackY;
+                                    let cursor = fallbackStartX;
+                                    const newImages: ImageElement[] = generated.map((img, idx) => {
+                                        const { width, height } = dims[idx];
+                                        const fallbackX = cursor;
+                                        cursor = fallbackX + width + PLACEHOLDER_GAP;
 
-                                    return {
-                                        id: newImageIds[idx],
-                                        type: "image",
-                                        x,
-                                        y,
-                                        name: `Generated Image ${idx + 1}`,
-                                        width,
-                                        height,
-                                        href: img.href,
-                                        mimeType: img.mimeType,
-                                    };
+                                        const ph = placeholdersInOrder[idx];
+                                        const x = ph ? ph.x + (ph.width - width) / 2 : fallbackX;
+                                        const y = ph ? ph.y + (ph.height - height) / 2 : fallbackY;
+
+                                        return {
+                                            id: newImageIds[idx],
+                                            type: "image",
+                                            x,
+                                            y,
+                                            name: `Generated Image ${idx + 1}`,
+                                            width,
+                                            height,
+                                            href: img.href,
+                                            mimeType: img.mimeType,
+                                            originalWidth: width,
+                                            originalHeight: height,
+                                            prompt: task.prompt,
+                                            aiSourceKind: "edit" as const,
+                                            aiAspectRatio: task.imageAspectRatio,
+                                            aiImageSize: task.imageSize,
+                                            aiInputImage,
+                                        };
+                                    });
+
+                                    return [
+                                        ...prev.filter(el => !placeholderIdSet.has(el.id)),
+                                        ...newImages,
+                                    ];
                                 });
-
-                                return [
-                                    ...prev.filter(el => !placeholderIdSet.has(el.id)),
-                                    ...newImages,
-                                ];
-                            });
-                            if (activeBoardIdRef.current === task.boardId) {
-                                setSelectedElementIds([newImageIds[newImageIds.length - 1]]);
+                                if (activeBoardIdRef.current === task.boardId) {
+                                    setSelectedElementIds([newImageIds[newImageIds.length - 1]]);
+                                }
                             }
                         }
                     }
@@ -1087,7 +1317,32 @@ const App: React.FC = () => {
                     const error = err as Error;
                     if (placeholderIds.length) {
                         const placeholderIdSet = new Set(placeholderIds);
-                        commitBoardActionById(task.boardId, prev => prev.filter(el => !placeholderIdSet.has(el.id)));
+                        if (replaceImageElementId) {
+                            commitBoardActionById(task.boardId, prev =>
+                                prev
+                                    .filter(el => !(placeholderIdSet.has(el.id) && el.id !== replaceImageElementId))
+                                    .map(el => {
+                                        if (el.id !== replaceImageElementId) return el;
+                                        if (el.type !== "image") return el;
+                                        if (!replaceOriginal) return el;
+                                        return {
+                                            ...el,
+                                            href: replaceOriginal.href,
+                                            mimeType: replaceOriginal.mimeType,
+                                            name: replaceOriginal.name ?? el.name,
+                                            originalWidth: replaceOriginal.originalWidth,
+                                            originalHeight: replaceOriginal.originalHeight,
+                                            prompt: replaceOriginal.prompt,
+                                            aiSourceKind: replaceOriginal.aiSourceKind,
+                                            aiAspectRatio: replaceOriginal.aiAspectRatio,
+                                            aiImageSize: replaceOriginal.aiImageSize,
+                                            aiInputImage: replaceOriginal.aiInputImage,
+                                        };
+                                    })
+                            );
+                        } else {
+                            commitBoardActionById(task.boardId, prev => prev.filter(el => !placeholderIdSet.has(el.id)));
+                        }
                     }
                     updateTaskById(task.id, {
                         status: "failed",
@@ -1100,7 +1355,7 @@ const App: React.FC = () => {
                 }
             })();
         },
-        [commitBoardActionById, ensureBackendReachable, ensureImagePlaceholders, updateTaskById]
+        [beginReplaceImageWithPlaceholder, commitBoardActionById, ensureBackendReachable, ensureImagePlaceholders, updateTaskById]
     );
 
     useEffect(() => {
@@ -1332,6 +1587,8 @@ const App: React.FC = () => {
                     height: img.height,
                     href: dataUrl,
                     mimeType: mimeType,
+                    originalWidth: img.width,
+                    originalHeight: img.height,
                 };
                 setElements(prev => [...prev, newImage]);
                 setSelectedElementIds([newImage.id]);
@@ -2108,6 +2365,70 @@ const App: React.FC = () => {
         setIsTaskQueueCollapsed(false);
         setPrompt("");
     };
+
+    const handleRetryImageElement = useCallback((img: ImageElement) => {
+        const promptText = String(img.prompt || "").trim();
+        const isGeneratingPlaceholder = img.mimeType === "image/svg+xml" || img.href.startsWith("data:image/svg+xml");
+        if (!promptText || isGeneratingPlaceholder) return;
+
+        setError(null);
+
+        const aspectRatio = img.aiAspectRatio || imageAspectRatio;
+        const size = img.aiImageSize || imageSize;
+        const canvasCenter = { x: img.x + img.width / 2, y: img.y + img.height / 2 };
+
+        const base: Omit<AiTaskBase, "kind"> = {
+            id: generateId(),
+            status: "queued",
+            createdAt: Date.now(),
+            boardId: activeBoardId,
+            boardName: activeBoard.name,
+            aiProvider,
+            prompt: promptText,
+            replaceImageElementId: img.id,
+        };
+
+        const input = img.aiSourceKind === "edit" ? img.aiInputImage : undefined;
+        if (input) {
+            const inputElement: ImageElement = {
+                id: generateId(),
+                type: "image",
+                name: "Input Image",
+                x: img.x,
+                y: img.y,
+                width: img.width,
+                height: img.height,
+                href: input.href,
+                mimeType: input.mimeType,
+            };
+
+            const task: AiTask = {
+                ...base,
+                kind: "image.edit",
+                selectedElementIds: [],
+                selectedElements: [inputElement],
+                imageAspectRatio: aspectRatio,
+                imageSize: size,
+                imageCount: 1,
+            };
+
+            setAiTasks(prev => [...prev, task]);
+            setIsTaskQueueCollapsed(false);
+            return;
+        }
+
+        const task: AiTask = {
+            ...base,
+            kind: "image.generate",
+            canvasCenter,
+            imageAspectRatio: aspectRatio,
+            imageSize: size,
+            imageCount: 1,
+        };
+
+        setAiTasks(prev => [...prev, task]);
+        setIsTaskQueueCollapsed(false);
+    }, [activeBoard.name, activeBoardId, aiProvider, imageAspectRatio, imageSize]);
     
     const handleDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); }, []);
     const handleDrop = useCallback((e: React.DragEvent) => { e.preventDefault(); if (e.dataTransfer.files && e.dataTransfer.files[0]) { handleAddImageElement(e.dataTransfer.files[0]); } }, [handleAddImageElement]);
@@ -2175,7 +2496,9 @@ const App: React.FC = () => {
                 width,
                 height,
                 href,
-                mimeType
+                mimeType,
+                originalWidth: width,
+                originalHeight: height,
             };
 
             const idsToRemove = new Set(elementsToRasterize.map(el => el.id));
@@ -2737,11 +3060,11 @@ const App: React.FC = () => {
                                 }
                                 if (element.type === 'text') toolbarScreenWidth = 220;
                                 if (element.type === 'arrow' || element.type === 'line') toolbarScreenWidth = 220;
-                                if (element.type === 'image') toolbarScreenWidth = 220;
+                                if (element.type === 'image') toolbarScreenWidth = 380;
                                 if (element.type === 'video') toolbarScreenWidth = 160;
                                 if (element.type === 'group') toolbarScreenWidth = 80;
 
-                                const toolbarScreenHeight = 56;
+                                const toolbarScreenHeight = element.type === 'image' ? 170 : 56;
                                 
                                 const toolbarCanvasWidth = toolbarScreenWidth / zoom;
                                 const toolbarCanvasHeight = toolbarScreenHeight / zoom;
@@ -2753,11 +3076,75 @@ const App: React.FC = () => {
                                     style={{ transform: `scale(${1 / zoom})`, transformOrigin: 'top left', width: `${toolbarScreenWidth}px`, height: `${toolbarScreenHeight}px` }}
                                     onMouseDown={(e) => e.stopPropagation()}
                                 >
-                                    <div className="p-1.5 bg-white rounded-lg shadow-lg flex items-center justify-center space-x-2 border border-gray-200 text-gray-800">
-                                        <button title={t('contextMenu.copy')} onClick={() => handleCopyElement(element)} className="p-2 rounded hover:bg-gray-100 flex items-center justify-center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>
-                                        {element.type === 'image' && <button title={t('contextMenu.download')} onClick={() => handleDownloadImage(element)} className="p-2 rounded hover:bg-gray-100 flex items-center justify-center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg></button>}
-                                        {element.type === 'video' && <a title={t('contextMenu.download')} href={element.href} download={`video-${element.id}.mp4`} className="p-2 rounded hover:bg-gray-100 flex items-center justify-center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg></a>}
-                                        {element.type === 'image' && <button title={t('contextMenu.crop')} onClick={() => handleStartCrop(element)} className="p-2 rounded hover:bg-gray-100 flex items-center justify-center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"></path><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"></path></svg></button>}
+                                    <div className={`bg-white rounded-lg shadow-lg border border-gray-200 text-gray-800 ${element.type === 'image' ? 'p-2 flex flex-col space-y-2' : 'p-1.5 flex items-center justify-center space-x-2'}`}>
+                                        <div className="flex items-center justify-center space-x-2">
+                                            <button title={t('contextMenu.copy')} onClick={() => handleCopyElement(element)} className="p-2 rounded hover:bg-gray-100 flex items-center justify-center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>
+                                            {element.type === 'image' && <button title={t('contextMenu.download')} onClick={() => handleDownloadImage(element)} className="p-2 rounded hover:bg-gray-100 flex items-center justify-center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg></button>}
+                                            {element.type === 'video' && <a title={t('contextMenu.download')} href={element.href} download={`video-${element.id}.mp4`} className="p-2 rounded hover:bg-gray-100 flex items-center justify-center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg></a>}
+                                            {element.type === 'image' && <button title={t('contextMenu.crop')} onClick={() => handleStartCrop(element)} className="p-2 rounded hover:bg-gray-100 flex items-center justify-center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"></path><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"></path></svg></button>}
+                                            {element.type === 'image' && (() => {
+                                                const img = element as ImageElement;
+                                                const promptText = String(img.prompt || "").trim();
+                                                const isGeneratingPlaceholder = img.mimeType === "image/svg+xml" || img.href.startsWith("data:image/svg+xml");
+                                                const canRetry = Boolean(promptText) && !isGeneratingPlaceholder;
+                                                return (
+                                                    <button
+                                                        title="重试"
+                                                        disabled={!canRetry}
+                                                        onClick={() => handleRetryImageElement(img)}
+                                                        className="px-3 py-1.5 text-xs rounded bg-blue-500 text-white hover:bg-blue-600 disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed"
+                                                    >
+                                                        重试
+                                                    </button>
+                                                );
+                                            })()}
+                                            <div className="h-6 w-px bg-gray-200"></div>
+                                            <button title={t('contextMenu.delete')} onClick={() => handleDeleteElement(element.id)} className="p-2 rounded hover:bg-red-100 hover:text-red-600 flex items-center justify-center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
+                                        </div>
+
+                                        {element.type === 'image' && (() => {
+                                            const img = element as ImageElement;
+                                            const ow = Math.round(Number(img.originalWidth || img.width || 0));
+                                            const oh = Math.round(Number(img.originalHeight || img.height || 0));
+                                            const promptText = String(img.prompt || "").trim();
+                                            return (
+                                                <div className="space-y-1">
+                                                    <div className="text-xs text-gray-600">
+                                                        原始分辨率：{ow > 0 && oh > 0 ? `${ow}×${oh}` : "未知"}
+                                                    </div>
+                                                    <div className="text-xs text-gray-600">提示词（可编辑）：</div>
+                                                    <textarea
+                                                        value={selectedImagePromptDraft}
+                                                        placeholder="（无）"
+                                                        rows={3}
+                                                        onFocus={() => { selectedImagePromptEditingRef.current = true; }}
+                                                        onChange={(e) => setSelectedImagePromptDraft(e.target.value)}
+                                                        onBlur={(e) => {
+                                                            selectedImagePromptEditingRef.current = false;
+                                                            const next = e.currentTarget.value;
+                                                            const currentValue = String(img.prompt || '');
+                                                            if (next === currentValue) return;
+                                                            commitAction(prev => prev.map(el => {
+                                                                if (el.id === img.id && el.type === 'image') {
+                                                                    return { ...el, prompt: next };
+                                                                }
+                                                                return el;
+                                                            }));
+                                                        }}
+                                                        className="w-full text-xs text-gray-800 bg-gray-50 border border-gray-200 rounded p-2 leading-snug resize-none focus:outline-none focus:ring-2 focus:ring-blue-200"
+                                                    />
+                                                    {Boolean(promptText) && (
+                                                        <div className="text-[11px] text-gray-500">编辑后会自动保存，用于重试。</div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })()}
+
+                                        {element.type !== 'image' && <>
+                                            <div className="h-6 w-px bg-gray-200"></div>
+                                            <button title={t('contextMenu.delete')} onClick={() => handleDeleteElement(element.id)} className="p-2 rounded hover:bg-red-100 hover:text-red-600 flex items-center justify-center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
+                                        </>}
+
                                         {element.type === 'shape' && (
                                             <>
                                                 <input type="color" title={t('contextMenu.fillColor')} value={element.fillColor} onChange={e => handlePropertyChange(element.id, { fillColor: e.target.value })} className="w-7 h-7 p-0 border-none rounded cursor-pointer" />
@@ -2805,8 +3192,6 @@ const App: React.FC = () => {
                                         {element.type === 'text' && <input type="number" title={t('contextMenu.fontSize')} value={element.fontSize} onChange={e => handlePropertyChange(element.id, { fontSize: parseInt(e.target.value, 10) || 16 })} className="w-16 p-1 border rounded bg-gray-100 text-gray-800" />}
                                         {(element.type === 'arrow' || element.type === 'line') && <input type="color" title={t('contextMenu.strokeColor')} value={element.strokeColor} onChange={e => handlePropertyChange(element.id, { strokeColor: e.target.value })} className="w-7 h-7 p-0 border-none rounded cursor-pointer" />}
                                         {(element.type === 'arrow' || element.type === 'line') && <input type="range" title={t('contextMenu.strokeWidth')} min="1" max="50" value={element.strokeWidth} onChange={e => handlePropertyChange(element.id, { strokeWidth: parseInt(e.target.value, 10) })} className="w-20" />}
-                                        <div className="h-6 w-px bg-gray-200"></div>
-                                        <button title={t('contextMenu.delete')} onClick={() => handleDeleteElement(element.id)} className="p-2 rounded hover:bg-red-100 hover:text-red-600 flex items-center justify-center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
                                     </div>
                                 </div>;
                                 
