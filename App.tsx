@@ -1890,6 +1890,7 @@ const App: React.FC = () => {
 
             setAiTasks(prev => [...prev, task]);
             setIsTaskQueueCollapsed(false);
+            setPrompt("");
             return;
         }
 
@@ -1913,6 +1914,7 @@ const App: React.FC = () => {
 
             setAiTasks(prev => [...prev, task]);
             setIsTaskQueueCollapsed(false);
+            setPrompt("");
             return;
         }
 
@@ -1927,6 +1929,7 @@ const App: React.FC = () => {
 
         setAiTasks(prev => [...prev, task]);
         setIsTaskQueueCollapsed(false);
+        setPrompt("");
     };
     
     const handleDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); }, []);
