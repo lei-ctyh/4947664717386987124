@@ -93,25 +93,49 @@ https://github.com/user-attachments/assets/83c96432-4246-4c1c-9087-6d0669acdaed
 方便效果直出+连续编辑
 
 
-# Online
+# 在线体验
 
-This contains everything you need to run your app locally.
+本项目支持在 Google AI Studio 在线体验：
 
-View your app in AI Studio: https://ai.studio/apps/drive/1CsvkMqNnxdUrmJZYeSXNZDf6T1Yq2qQW
+https://ai.studio/apps/drive/1CsvkMqNnxdUrmJZYeSXNZDf6T1Yq2qQW
 
-## Run Locally
+## 本地启动
 
-**Prerequisites:**  Node.js
+**前置条件：** Node.js 18+（推荐使用 npm）
 
+### 方式 A：开发模式（推荐）
 
-1. Install dependencies:
+前端使用 Vite（默认 `http://localhost:3000`），后端提供 API（默认 `http://localhost:8787`）。`./vite.config.ts` 已配置把 `/api` 代理到后端。
+
+1. 安装依赖：
    `npm install`
-2. Configure Gemini providers in [.env.local](.env.local) (comma/newline separated lists):
-   - `VITE_GEMINI_BASE_URLS=...`
-   - `VITE_GEMINI_API_KEYS=...`
-   - `VITE_GEMINI_MODELS=...`
-3. Run the app:
+2. 启动后端（需要设置管理员密码，用于登录/会话签名）：
+   - macOS/Linux：
+     `BANANAPOD_ADMIN_PASSWORD="your_password" npm run server`
+   - Windows PowerShell：
+     `$env:BANANAPOD_ADMIN_PASSWORD="your_password"; npm run server`
+3. 另开一个终端启动前端：
    `npm run dev`
+4. 打开 `http://localhost:3000`，登录后在「设置 / Gemini」里添加平台（`baseUrl`/`model`/`apiKey`）。
+   - 配置会写入 `./.bananapod.config.json`（已在 `.gitignore` 中忽略，请勿提交到仓库）。
+
+### 方式 B：生产模式（后端托管前端静态文件）
+
+后端默认从 `./dist` 提供静态文件（`BANANAPOD_STATIC_DIR` 可覆盖）。
+
+1. 构建前端：
+   `npm run build`
+2. 启动服务（同样需要先设置 `BANANAPOD_ADMIN_PASSWORD`）：
+   `npm run start`
+3. 打开 `http://localhost:8787`
+
+### 常用环境变量
+
+- `BANANAPOD_PORT` / `PORT`：后端端口（默认 `8787`）。若修改端口，需要同步调整 `./vite.config.ts` 的代理目标。
+- `BANANAPOD_REQUIRE_AUTH_FOR_AI=0`：关闭 AI 接口登录校验（默认开启）。
+- `BANANAPOD_STATIC_DIR`：静态文件目录（默认 `./dist`）。
+- `BANANAPOD_CONFIG_PATH`：配置文件路径（默认 `./.bananapod.config.json`）。
+- `BANANAPOD_LOG_FILE`：日志文件（默认 `./logs/bananapod.log`）。
 
 
 

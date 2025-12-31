@@ -2116,22 +2116,6 @@ const App: React.FC = () => {
                         <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
                             <circle cx="1" cy="1" r="1" className="fill-gray-400 opacity-50"/>
                         </pattern>
-                         {elements.map(el => {
-                            if (el.type === 'image' && el.borderRadius && el.borderRadius > 0) {
-                                const clipPathId = `clip-${el.id}`;
-                                return (
-                                    <clipPath id={clipPathId} key={clipPathId}>
-                                        <rect
-                                            width={el.width}
-                                            height={el.height}
-                                            rx={el.borderRadius}
-                                            ry={el.borderRadius}
-                                        />
-                                    </clipPath>
-                                );
-                            }
-                            return null;
-                        })}
                     </defs>
                     <g transform={`translate(${panOffset.x}, ${panOffset.y}) scale(${zoom})`}>
                         <rect x={-panOffset.x/zoom} y={-panOffset.y/zoom} width={`calc(100% / ${zoom})`} height={`calc(100% / ${zoom})`} fill="url(#grid)" />
@@ -2227,8 +2211,6 @@ const App: React.FC = () => {
                                 );
                             }
                             if (el.type === 'image') {
-                                const hasBorderRadius = el.borderRadius && el.borderRadius > 0;
-                                const clipPathId = `clip-${el.id}`;
                                 return (
                                     <g key={el.id} data-id={el.id}>
                                         <image 
@@ -2237,7 +2219,6 @@ const App: React.FC = () => {
                                             width={el.width} 
                                             height={el.height} 
                                             className={croppingState && croppingState.elementId !== el.id ? 'opacity-30' : ''} 
-                                            clipPath={hasBorderRadius ? `url(#${clipPathId})` : undefined}
                                         />
                                         {selectionComponent}
                                     </g>
@@ -2316,7 +2297,7 @@ const App: React.FC = () => {
                                 }
                                 if (element.type === 'text') toolbarScreenWidth = 220;
                                 if (element.type === 'arrow' || element.type === 'line') toolbarScreenWidth = 220;
-                                if (element.type === 'image') toolbarScreenWidth = 340;
+                                if (element.type === 'image') toolbarScreenWidth = 220;
                                 if (element.type === 'video') toolbarScreenWidth = 160;
                                 if (element.type === 'group') toolbarScreenWidth = 80;
 
@@ -2337,30 +2318,6 @@ const App: React.FC = () => {
                                         {element.type === 'image' && <button title={t('contextMenu.download')} onClick={() => handleDownloadImage(element)} className="p-2 rounded hover:bg-gray-100 flex items-center justify-center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg></button>}
                                         {element.type === 'video' && <a title={t('contextMenu.download')} href={element.href} download={`video-${element.id}.mp4`} className="p-2 rounded hover:bg-gray-100 flex items-center justify-center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg></a>}
                                         {element.type === 'image' && <button title={t('contextMenu.crop')} onClick={() => handleStartCrop(element)} className="p-2 rounded hover:bg-gray-100 flex items-center justify-center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"></path><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"></path></svg></button>}
-                                        {element.type === 'image' && (
-                                            <>
-                                                <div className="h-6 w-px bg-gray-200"></div>
-                                                <div title={t('contextMenu.borderRadius')} className="flex items-center space-x-1 p-1">
-                                                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-600"><path d="M10 3H5a2 2 0 0 0-2 2v5"/></svg>
-                                                    <input 
-                                                        type="range" 
-                                                        min="0" 
-                                                        max={Math.min(element.width, element.height) / 2} 
-                                                        value={element.borderRadius || 0} 
-                                                        onChange={e => handlePropertyChange(element.id, { borderRadius: parseInt(e.target.value, 10) })} 
-                                                        className="w-16" 
-                                                    />
-                                                    <input
-                                                        type="number"
-                                                        min="0"
-                                                        max={Math.min(element.width, element.height) / 2}
-                                                        value={element.borderRadius || 0}
-                                                        onChange={e => handlePropertyChange(element.id, { borderRadius: parseInt(e.target.value, 10) || 0 })}
-                                                        className="w-14 p-1 text-xs border rounded bg-gray-100 text-gray-800"
-                                                    />
-                                                </div>
-                                            </>
-                                        )}
                                         {element.type === 'shape' && (
                                             <>
                                                 <input type="color" title={t('contextMenu.fillColor')} value={element.fillColor} onChange={e => handlePropertyChange(element.id, { fillColor: e.target.value })} className="w-7 h-7 p-0 border-none rounded cursor-pointer" />
