@@ -371,6 +371,8 @@ type AiTaskBase = {
     prompt: string;
     progress?: string;
     error?: string;
+    placeholderElementIds?: string[];
+    placeholderSize?: number;
 };
 
 type AiTask =
@@ -640,6 +642,84 @@ const App: React.FC = () => {
         return [];
     };
 
+    const PLACEHOLDER_GAP = 20;
+    const DEFAULT_PLACEHOLDER_SIZE = 360;
+
+    const buildGeneratingPlaceholderDataUrl = (size: number, label = "Generating..."): string => {
+        const s = Math.max(64, Math.floor(size || DEFAULT_PLACEHOLDER_SIZE));
+        const cx = s / 2;
+        const cy = s / 2;
+        const r = Math.max(10, Math.floor(s * 0.06));
+        const stroke = Math.max(2, Math.floor(s * 0.012));
+        const font1 = Math.max(12, Math.floor(s * 0.045));
+        const font2 = Math.max(10, Math.floor(s * 0.032));
+
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}" viewBox="0 0 ${s} ${s}">
+  <defs>
+    <linearGradient id="bp-g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1f1636"/>
+      <stop offset="0.55" stop-color="#4b2a8f"/>
+      <stop offset="1" stop-color="#2b1a55"/>
+    </linearGradient>
+    <radialGradient id="bp-glow" cx="35%" cy="30%" r="80%">
+      <stop offset="0" stop-color="rgba(255,255,255,0.18)"/>
+      <stop offset="1" stop-color="rgba(255,255,255,0)"/>
+    </radialGradient>
+    <filter id="bp-soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="10" />
+    </filter>
+  </defs>
+  <rect width="100%" height="100%" rx="8" fill="url(#bp-g)"/>
+  <rect width="100%" height="100%" rx="8" fill="url(#bp-glow)"/>
+  <g transform="translate(${cx} ${cy})">
+    <circle r="${r}" fill="none" stroke="rgba(255,255,255,0.55)" stroke-width="${stroke}" stroke-linecap="round" stroke-dasharray="${Math.floor(Math.PI * 2 * r * 0.72)} ${Math.floor(Math.PI * 2 * r * 0.28)}">
+      <animateTransform attributeName="transform" type="rotate" from="0 0 0" to="360 0 0" dur="1.1s" repeatCount="indefinite"/>
+    </circle>
+    <circle r="${Math.max(6, Math.floor(r * 0.42))}" fill="rgba(255,255,255,0.12)" filter="url(#bp-soft)"/>
+  </g>
+  <text x="50%" y="${Math.floor(s * 0.58)}" text-anchor="middle" fill="rgba(255,255,255,0.78)" font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial" font-size="${font1}" font-weight="600">${label}</text>
+  <text x="50%" y="${Math.floor(s * 0.66)}" text-anchor="middle" fill="rgba(255,255,255,0.55)" font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial" font-size="${font2}">•••</text>
+</svg>`;
+
+        return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+    };
+
+    const getElementsBounds = (list: Element[]): { minX: number; minY: number; maxX: number; maxY: number } => {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        list.forEach(el => {
+            const b = getElementBounds(el, list);
+            minX = Math.min(minX, b.x);
+            minY = Math.min(minY, b.y);
+            maxX = Math.max(maxX, b.x + b.width);
+            maxY = Math.max(maxY, b.y + b.height);
+        });
+        if (!Number.isFinite(minX)) return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+        return { minX, minY, maxX, maxY };
+    };
+
+    const ensureImagePlaceholders = useCallback((taskId: string, task: AiTask, count: number, x: number, y: number) => {
+        if (count <= 0) return [];
+        const size = task.placeholderSize ?? DEFAULT_PLACEHOLDER_SIZE;
+        const dataUrl = buildGeneratingPlaceholderDataUrl(size);
+
+        const placeholders: ImageElement[] = Array.from({ length: count }).map((_, idx) => ({
+            id: generateId(),
+            type: "image",
+            name: "Generating...",
+            x: x + idx * (size + PLACEHOLDER_GAP),
+            y,
+            width: size,
+            height: size,
+            href: dataUrl,
+            mimeType: "image/svg+xml",
+        }));
+
+        const ids = placeholders.map(p => p.id);
+        commitBoardActionById(task.boardId, prev => [...prev, ...placeholders]);
+        updateTaskById(taskId, { placeholderElementIds: ids, placeholderSize: size });
+        return ids;
+    }, [commitBoardActionById, updateTaskById]);
+
     const ensureBackendReachable = useCallback(async () => {
         const now = Date.now();
         const cached = backendHealthRef.current;
@@ -688,9 +768,41 @@ const App: React.FC = () => {
             );
 
             (async () => {
+                let placeholderIds: string[] = [];
                 try {
                     const current = aiTasksRef.current.find(t => t.id === task.id);
                     if (!current || current.status !== "running") return;
+
+                    placeholderIds = Array.isArray(current.placeholderElementIds) ? current.placeholderElementIds : [];
+                    if (!placeholderIds.length) {
+                        if (current.kind === "image.generate") {
+                            const size = current.placeholderSize ?? DEFAULT_PLACEHOLDER_SIZE;
+                            const x = current.canvasCenter.x - size / 2;
+                            const y = current.canvasCenter.y - size / 2;
+                            placeholderIds = ensureImagePlaceholders(task.id, current, current.imageCount, x, y);
+                        } else if (current.kind === "image.edit") {
+                            const selectedElements = current.selectedElements || [];
+                            const imageElements = selectedElements.filter(el => el.type === "image") as ImageElement[];
+                            const maskPaths = selectedElements.filter(el => el.type === "path" && el.strokeOpacity && el.strokeOpacity < 1) as PathElement[];
+                            const isInpainting =
+                                imageElements.length === 1 && maskPaths.length > 0 && selectedElements.length === 1 + maskPaths.length;
+
+                            if (isInpainting) {
+                                const baseImage = imageElements[0];
+                                const count = Math.max(0, (current.imageCount || 1) - 1);
+                                const inferred = Math.max(160, Math.min(480, Math.floor(Math.min(baseImage.width, baseImage.height) || DEFAULT_PLACEHOLDER_SIZE)));
+                                const startX = baseImage.x + baseImage.width + PLACEHOLDER_GAP;
+                                const startY = baseImage.y;
+                                placeholderIds = ensureImagePlaceholders(task.id, { ...current, placeholderSize: inferred } as AiTask, count, startX, startY);
+                            } else {
+                                const b = getElementsBounds(selectedElements);
+                                const size = current.placeholderSize ?? DEFAULT_PLACEHOLDER_SIZE;
+                                const startX = b.maxX + PLACEHOLDER_GAP;
+                                const startY = b.minY;
+                                placeholderIds = ensureImagePlaceholders(task.id, { ...current, placeholderSize: size } as AiTask, current.imageCount, startX, startY);
+                            }
+                        }
+                    }
 
                     updateTaskById(task.id, { progress: "检查后端..." });
                     await ensureBackendReachable();
@@ -762,30 +874,47 @@ const App: React.FC = () => {
 
                         updateTaskById(task.id, { progress: "处理图片..." });
                         const dims = await Promise.all(generated.map((img) => loadImageDimensions(img.href)));
+                        const newImageIds = generated.map(() => generateId());
 
-                        const startX = task.canvasCenter.x - dims[0].width / 2;
-                        let cursorX = startX;
-                        const newImages: ImageElement[] = generated.map((img, idx) => {
-                            const { width, height } = dims[idx];
-                            const x = idx === 0 ? startX : cursorX;
-                            const y = task.canvasCenter.y - height / 2;
-                            cursorX = x + width + 20;
-                            return {
-                                id: generateId(),
-                                type: "image",
-                                x,
-                                y,
-                                name: `Generated Image ${idx + 1}`,
-                                width,
-                                height,
-                                href: img.href,
-                                mimeType: img.mimeType,
-                            };
+                        const placeholderIdSet = new Set(placeholderIds);
+                        commitBoardActionById(task.boardId, prev => {
+                            const placeholdersInOrder = placeholderIds
+                                .map((id) => prev.find((el) => el.id === id))
+                                .filter((el): el is ImageElement => Boolean(el && el.type === "image"));
+
+                            const startX = task.canvasCenter.x - dims[0].width / 2;
+                            let cursorX = startX;
+
+                            const newImages: ImageElement[] = generated.map((img, idx) => {
+                                const { width, height } = dims[idx];
+                                const fallbackX = idx === 0 ? startX : cursorX;
+                                const fallbackY = task.canvasCenter.y - height / 2;
+                                cursorX = fallbackX + width + 20;
+
+                                const ph = placeholdersInOrder[idx];
+                                const x = ph ? ph.x + (ph.width - width) / 2 : fallbackX;
+                                const y = ph ? ph.y + (ph.height - height) / 2 : fallbackY;
+
+                                return {
+                                    id: newImageIds[idx],
+                                    type: "image",
+                                    x,
+                                    y,
+                                    name: `Generated Image ${idx + 1}`,
+                                    width,
+                                    height,
+                                    href: img.href,
+                                    mimeType: img.mimeType,
+                                };
+                            });
+
+                            return [
+                                ...prev.filter(el => !placeholderIdSet.has(el.id)),
+                                ...newImages,
+                            ];
                         });
-
-                        commitBoardActionById(task.boardId, prev => [...prev, ...newImages]);
                         if (activeBoardIdRef.current === task.boardId) {
-                            setSelectedElementIds([newImages[newImages.length - 1].id]);
+                            setSelectedElementIds([newImageIds[newImageIds.length - 1]]);
                         }
                     }
 
@@ -817,43 +946,64 @@ const App: React.FC = () => {
                             updateTaskById(task.id, { progress: "处理图片..." });
                             const dims = await Promise.all(generated.map((img) => loadImageDimensions(img.href)));
                             const maskPathIds = new Set(maskPaths.map(p => p.id));
+                            const additionalImageIds = generated.slice(1).map(() => generateId());
 
                             const first = generated[0];
                             const firstDims = dims[0];
-                            const additionalImages: ImageElement[] = [];
-                            let cursorX = baseImage.x + firstDims.width + 20;
 
-                            for (let i = 1; i < generated.length; i++) {
-                                const { href, mimeType } = generated[i];
-                                const { width, height } = dims[i];
-                                additionalImages.push({
-                                    id: generateId(),
-                                    type: "image",
-                                    x: cursorX,
-                                    y: baseImage.y,
-                                    name: `Generated Image ${i + 1}`,
-                                    width,
-                                    height,
-                                    href,
-                                    mimeType,
-                                });
-                                cursorX += width + 20;
-                            }
+                            const placeholderIdSet = new Set(placeholderIds);
+                            commitBoardActionById(task.boardId, prev => {
+                                const placeholdersInOrder = placeholderIds
+                                    .map((id) => prev.find((el) => el.id === id))
+                                    .filter((el): el is ImageElement => Boolean(el && el.type === "image"));
 
-                            commitBoardActionById(task.boardId, prev => [
-                                ...prev
+                                const baseNow = prev.find((el) => el.id === baseImage.id && el.type === "image") as ImageElement | undefined;
+                                const baseX = baseNow?.x ?? baseImage.x;
+                                const baseY = baseNow?.y ?? baseImage.y;
+                                let cursorX = baseX + firstDims.width + PLACEHOLDER_GAP;
+
+                                const additionalImages: ImageElement[] = [];
+                                for (let i = 1; i < generated.length; i++) {
+                                    const { href, mimeType } = generated[i];
+                                    const { width, height } = dims[i];
+                                    const ph = placeholdersInOrder[i - 1];
+
+                                    const fallbackX = cursorX;
+                                    const fallbackY = baseY;
+                                    cursorX = fallbackX + width + PLACEHOLDER_GAP;
+
+                                    const x = ph ? ph.x + (ph.width - width) / 2 : fallbackX;
+                                    const y = ph ? ph.y + (ph.height - height) / 2 : fallbackY;
+
+                                    additionalImages.push({
+                                        id: additionalImageIds[i - 1] || generateId(),
+                                        type: "image",
+                                        x,
+                                        y,
+                                        name: `Generated Image ${i + 1}`,
+                                        width,
+                                        height,
+                                        href,
+                                        mimeType,
+                                    });
+                                }
+
+                                const next = prev
+                                    .filter(el => !placeholderIdSet.has(el.id))
                                     .map(el => {
                                         if (el.id === baseImage.id && el.type === "image") {
                                             return { ...el, href: first.href, mimeType: first.mimeType, width: firstDims.width, height: firstDims.height };
                                         }
                                         return el;
                                     })
-                                    .filter(el => !maskPathIds.has(el.id)),
-                                ...additionalImages,
-                            ]);
+                                    .filter(el => !maskPathIds.has(el.id));
+
+                                return [...next, ...additionalImages];
+                            });
 
                             if (activeBoardIdRef.current === task.boardId) {
-                                setSelectedElementIds([additionalImages.length ? additionalImages[additionalImages.length - 1].id : baseImage.id]);
+                                const lastId = additionalImageIds.length ? additionalImageIds[Math.max(0, additionalImageIds.length - 1)] : baseImage.id;
+                                setSelectedElementIds([lastId]);
                             }
                         } else {
                             const imagePromises = selectedElements.map(el => {
@@ -885,26 +1035,49 @@ const App: React.FC = () => {
 
                             updateTaskById(task.id, { progress: "处理图片..." });
                             const dims = await Promise.all(generated.map((img) => loadImageDimensions(img.href)));
+                            const newImageIds = generated.map(() => generateId());
 
-                            const newImages: ImageElement[] = generated.map((img, idx) => {
-                                const { width, height } = dims[idx];
-                                const x = idx === 0 ? cursorX : cursorX + dims.slice(0, idx).reduce((acc, d) => acc + d.width + 20, 0);
-                                return {
-                                    id: generateId(),
-                                    type: "image",
-                                    x,
-                                    y: minY,
-                                    name: `Generated Image ${idx + 1}`,
-                                    width,
-                                    height,
-                                    href: img.href,
-                                    mimeType: img.mimeType,
-                                };
+                            const placeholderIdSet = new Set(placeholderIds);
+                            commitBoardActionById(task.boardId, prev => {
+                                const placeholdersInOrder = placeholderIds
+                                    .map((id) => prev.find((el) => el.id === id))
+                                    .filter((el): el is ImageElement => Boolean(el && el.type === "image"));
+
+                                const selectedNow = prev.filter(el => task.selectedElementIds.includes(el.id));
+                                const b = getElementsBounds(selectedNow.length ? selectedNow : selectedElements);
+                                const fallbackStartX = Number.isFinite(b.maxX) ? b.maxX + PLACEHOLDER_GAP : cursorX;
+                                const fallbackY = Number.isFinite(b.minY) ? b.minY : minY;
+
+                                let cursor = fallbackStartX;
+                                const newImages: ImageElement[] = generated.map((img, idx) => {
+                                    const { width, height } = dims[idx];
+                                    const fallbackX = idx === 0 ? cursor : cursor;
+                                    cursor = fallbackX + width + PLACEHOLDER_GAP;
+
+                                    const ph = placeholdersInOrder[idx];
+                                    const x = ph ? ph.x + (ph.width - width) / 2 : fallbackX;
+                                    const y = ph ? ph.y + (ph.height - height) / 2 : fallbackY;
+
+                                    return {
+                                        id: newImageIds[idx],
+                                        type: "image",
+                                        x,
+                                        y,
+                                        name: `Generated Image ${idx + 1}`,
+                                        width,
+                                        height,
+                                        href: img.href,
+                                        mimeType: img.mimeType,
+                                    };
+                                });
+
+                                return [
+                                    ...prev.filter(el => !placeholderIdSet.has(el.id)),
+                                    ...newImages,
+                                ];
                             });
-
-                            commitBoardActionById(task.boardId, prev => [...prev, ...newImages]);
                             if (activeBoardIdRef.current === task.boardId) {
-                                setSelectedElementIds([newImages[newImages.length - 1].id]);
+                                setSelectedElementIds([newImageIds[newImageIds.length - 1]]);
                             }
                         }
                     }
@@ -912,6 +1085,10 @@ const App: React.FC = () => {
                     updateTaskById(task.id, { status: "succeeded", finishedAt: Date.now(), progress: undefined, error: undefined });
                 } catch (err) {
                     const error = err as Error;
+                    if (placeholderIds.length) {
+                        const placeholderIdSet = new Set(placeholderIds);
+                        commitBoardActionById(task.boardId, prev => prev.filter(el => !placeholderIdSet.has(el.id)));
+                    }
                     updateTaskById(task.id, {
                         status: "failed",
                         finishedAt: Date.now(),
@@ -923,7 +1100,7 @@ const App: React.FC = () => {
                 }
             })();
         },
-        [commitBoardActionById, ensureBackendReachable, updateTaskById]
+        [commitBoardActionById, ensureBackendReachable, ensureImagePlaceholders, updateTaskById]
     );
 
     useEffect(() => {
